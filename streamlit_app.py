@@ -4,6 +4,7 @@ Reads the live 'App Data' tab from the dashboard workbook. Run locally with:
     streamlit run streamlit_app.py
 """
 import html
+import urllib.parse
 from datetime import date
 
 import gspread
@@ -96,6 +97,21 @@ details.kt-why div { background:#f7f9fa; border:1px solid #eaeef0; border-radius
   .kt-kpi { min-width:46%; }
   .block-container { padding-left:.6rem; padding-right:.6rem; }
 }
+/* —— warm KitchenToolz brand theme —— */
+.stApp { background:#f6f3ee; }
+.kt-hero { background:linear-gradient(120deg,#3e2723 0%,#7a5239 100%); box-shadow:0 10px 30px rgba(62,39,35,.28); }
+.kt-brand { color:#f0e6da; }
+.kt-logo { height:48px; margin-bottom:10px; display:block; }
+/* stock-breakdown mini-bar */
+.kt-bar { display:flex; height:7px; border-radius:99px; overflow:hidden; margin-top:10px; background:#eef0f3; max-width:420px; }
+.kt-bar span { height:100%; }
+.kt-barkey { font-size:.66rem; color:#9aa0aa; margin-top:4px; }
+.kt-barkey i { font-style:normal; }
+.kt-dot { display:inline-block; width:8px; height:8px; border-radius:2px; margin:0 3px 0 9px; vertical-align:middle; }
+/* product detail page */
+.kt-back { color:#7a5239; font-weight:700; text-decoration:none; font-size:.95rem; }
+.kt-back:hover { text-decoration:underline; }
+.kt-detail { background:#fff; border-radius:18px; padding:8px 4px; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -109,6 +125,17 @@ EMOJI = {"order now": "🔴", "order soon": "🟡", "ok": "🟢", "no sales": "�
 def load_data():
     ws = _gclient().open_by_key(config.CHINA_SHEET_ID).worksheet("App Data")
     return pd.DataFrame(ws.get_all_records())
+
+
+@st.cache_data
+def logo_uri():
+    """Return a base64 data-URI for logo.png if present (so it works on the cloud too)."""
+    import base64
+    import os
+    for name, mime in (("logo.png", "png"), ("logo.jpg", "jpeg"), ("logo.jpeg", "jpeg")):
+        if os.path.exists(name):
+            return f"data:image/{mime};base64," + base64.b64encode(open(name, "rb").read()).decode()
+    return None
 
 
 @st.cache_data(ttl=300)
@@ -166,6 +193,13 @@ def freshness(df):
     return ago, hrs > 28
 
 
+def seller_central_url(sku):
+    """Deep-link to this SKU in Amazon Seller Central's Manage Inventory search."""
+    return ("https://sellercentral.amazon.com/myinventory/inventory?fulfilledBy=all&page=1&pageSize=100"
+            "&searchField=all&searchTerm=" + urllib.parse.quote(str(sku)) +
+            "&sort=available_desc&status=all&ref_=xx_invmgr_favb_xx")
+
+
 def card_html(row, action_html, why_field):
     prio = str(row.get("Priority", ""))
     pill_cls, pill_txt = PILL.get(prio, ("kt-none", prio.upper()))
@@ -177,11 +211,15 @@ def card_html(row, action_html, why_field):
     supplier = html.escape(str(row.get("Supplier", "")))
     product = html.escape(str(row.get("Product", "")))
     amz = f"https://www.amazon.com/dp/{asin}" if asin else ""
-    title_html = f'<a href="{amz}" target="_blank" class="kt-link" title="Open on Amazon">{product}</a>' if amz else product
-    sub_bits = [f'<a href="{amz}" target="_blank" class="kt-skulink" title="Open on Amazon">{sku} ↗</a>' if amz else sku,
-                f'🏭 {supplier}']
+    sc = seller_central_url(str(row.get("SKU", "")))
+    view_url = "?view=" + urllib.parse.quote(str(row.get("SKU", "")))
+    title_html = f'<a href="{view_url}" target="_self" class="kt-link" title="See full details">{product}</a>'
+    sub_bits = [
+        f'<a href="{sc}" target="_blank" class="kt-skulink" title="Open this SKU in Amazon Seller Central inventory">{sku} ↗</a>',
+        f'🏭 {supplier}',
+    ]
     if amz:
-        sub_bits.append(f'<a href="{amz}" target="_blank" class="kt-skulink" title="View on Amazon">🔗 {asin}</a>')
+        sub_bits.append(f'<a href="{amz}" target="_blank" class="kt-skulink" title="Open the Amazon buyer page for this ASIN">🛒 {asin}</a>')
     sub = " &nbsp;·&nbsp; ".join(sub_bits)
 
     chip_data = [
@@ -200,12 +238,18 @@ def card_html(row, action_html, why_field):
                 f'<div>{html.escape(why)}</div></details>') if why else ""
     by = (f'<div class="kt-by">by {html.escape(str(row.get("Order by","")))}</div>'
           if str(row.get("Order by", "")).strip() else "")
+    seg = [(_int(row.get("In FBA")), "#2e86de", "In FBA"), (_int(row.get("On the way")), "#1f8a70", "On the way"),
+           (_int(row.get("China warehouse")), "#e0a800", "China"), (_int(row.get("In production")), "#9b59b6", "In production")]
+    _tot = sum(v for v, _, _ in seg) or 1
+    bar = "".join(f'<span style="width:{v / _tot * 100:.1f}%;background:{c}" title="{lbl}: {v:,}"></span>'
+                  for v, c, lbl in seg if v > 0)
+    bar_html = f'<div class="kt-bar">{bar}</div>' if bar else ""
     return (
         f'<div class="kt-card">{imgtag}<div class="kt-body">'
         f'<div><span class="kt-pill {pill_cls}">{pill_txt}</span>{overdue}</div>'
         f'<div class="kt-title">{title_html}</div>'
         f'<div class="kt-sub">{sub}</div>'
-        f'<div class="kt-chips">{chips}</div>{why_html}</div>'
+        f'<div class="kt-chips">{chips}</div>{bar_html}{why_html}</div>'
         f'<div class="kt-act">{action_html}{by}</div></div>'
     )
 
@@ -246,6 +290,52 @@ def copy_button(text, label="📋  Copy all for 9Yards"):
     """, height=62)
 
 
+def show_detail(df, sku):
+    """A full detail 'page' for one product (opened by clicking a product name)."""
+    st.markdown('<a class="kt-back" href="?" target="_self">← Back to dashboard</a>', unsafe_allow_html=True)
+    m = df[df["SKU"].astype(str) == str(sku)]
+    if m.empty:
+        st.warning(f"Product '{sku}' isn't on the dashboard right now.")
+        return
+    r = m.iloc[0]
+    st.markdown(f"## {r['Product']}")
+    c1, c2 = st.columns([1, 2], vertical_alignment="top")
+    with c1:
+        if str(r.get("Image", "")).startswith("http"):
+            st.image(r["Image"], use_container_width=True)
+    with c2:
+        emoji = EMOJI.get(str(r.get("Priority", "")), "")
+        st.markdown(f"### {emoji} {r.get('What to do', '')}")
+        asin = str(r.get("ASIN", "")).strip()
+        line = f"`{r['SKU']}` · 🏭 {r['Supplier']}"
+        if asin:
+            line += f" · [🔗 View on Amazon](https://www.amazon.com/dp/{asin})"
+        st.markdown(line)
+        g = lambda k: f"{_int(r.get(k)):,}"
+        a, b, c = st.columns(3)
+        a.metric("Sells / day", r.get("Sells per day", ""))
+        b.metric("FBA days left", _int(r.get("FBA days left")))
+        c.metric("Days of cover", _int(r.get("Days of cover")))
+        d, e, f = st.columns(3)
+        d.metric("In FBA", g("In FBA"))
+        e.metric("On the way", g("On the way"))
+        f.metric("China warehouse", g("China warehouse"))
+        h, i, j = st.columns(3)
+        h.metric("In production", g("In production"))
+        i.metric("Ship qty", g("Ship qty"))
+        j.metric("Order qty", g("Order qty"))
+    ws, wo = str(r.get("Why ship", "")).strip(), str(r.get("Why order", "")).strip()
+    if ws:
+        st.markdown("#### 🚢 Why this ship quantity")
+        st.info(ws)
+    if wo:
+        st.markdown("#### 🏭 Why this order quantity")
+        st.info(wo)
+    if _int(r.get("Overdue days")) > 0:
+        st.warning(f"⚠️ {_int(r.get('Overdue days'))} days overdue at the supplier — chase them.")
+    st.markdown('<a class="kt-back" href="?" target="_self">← Back to dashboard</a>', unsafe_allow_html=True)
+
+
 # ---- load + refresh -------------------------------------------------------
 top_l, top_r = st.columns([5, 1])
 with top_r:
@@ -257,6 +347,12 @@ df = load_data()
 disc = load_discontinued()
 if disc:
     df = df[~df["SKU"].astype(str).str.strip().isin(disc)].copy()
+
+# ---- product detail page (when a product name is clicked) -----------------
+_view = st.query_params.get("view")
+if _view:
+    show_detail(df, _view)
+    st.stop()
 
 # ---- sidebar: hide / restore discontinued products ------------------------
 with st.sidebar:
@@ -293,8 +389,10 @@ if stale:
         'margin-bottom:14px;font-weight:600;border:1px solid #ffe69c;">⚠️ These numbers may be out of '
         f'date — last refreshed {ago}. Ask Shimon to run the morning update.</div>', unsafe_allow_html=True)
 chip = (f"🟢 Updated {ago} · {len(df)} products tracked" if ago else f"🟢 Live data · {len(df)} products tracked")
+_logo = logo_uri()
+brand = f'<img class="kt-logo" src="{_logo}">' if _logo else '<div class="kt-brand">🍴 KitchenToolz</div>'
 st.markdown(
-    '<div class="kt-hero"><div class="kt-brand">🍴 KitchenToolz</div>'
+    f'<div class="kt-hero">{brand}'
     '<h1>China Reorder Command Center</h1>'
     '<p>Everything you need to know — what to ship, what to order, and why.</p>'
     f'<span class="kt-chip">{chip}</span></div>',
@@ -307,6 +405,14 @@ st.markdown(
     f'<div class="kt-kpi" style="--ac:#e0a800"><div class="n">{n_overdue}</div><div class="l">⚠️ Overdue at Sky</div></div>'
     f'<div class="kt-kpi" style="--ac:#2e86de"><div class="n">{otw_total:,}</div><div class="l">📦 Units on the way</div></div>'
     '</div>', unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="kt-barkey">Stock bar on each card: '
+    '<span class="kt-dot" style="background:#2e86de"></span><i>In FBA</i>'
+    '<span class="kt-dot" style="background:#1f8a70"></span><i>On the way</i>'
+    '<span class="kt-dot" style="background:#e0a800"></span><i>China</i>'
+    '<span class="kt-dot" style="background:#9b59b6"></span><i>In production</i>'
+    '&nbsp;·&nbsp; click a product name for full details</div>', unsafe_allow_html=True)
 
 tab_ship, tab_order, tab_all = st.tabs(
     [f"🚢 Ship to FBA · {len(ship)}", f"🏭 Reorder · {len(reorder)}", f"📋 All products · {len(df)}"])
