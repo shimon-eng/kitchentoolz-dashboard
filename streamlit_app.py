@@ -11,6 +11,7 @@ import gspread
 import pandas as pd
 import streamlit as st
 
+import ai
 import config
 
 
@@ -33,85 +34,137 @@ st.set_page_config(page_title="Kitchentoolz Reorder", page_icon="📦", layout="
 
 CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-html, body, [class*="css"], .stMarkdown { font-family: 'Inter', sans-serif; }
-.stApp { background: #eef1f5; }
-.block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1120px; }
-#MainMenu, footer, header { visibility: hidden; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap');
 
-.kt-hero { background: linear-gradient(120deg,#0f3d5e 0%,#1f8a70 100%); color:#fff;
-  border-radius:20px; padding:24px 28px; margin-bottom:18px; box-shadow:0 10px 30px rgba(15,61,94,.25); }
-.kt-hero h1 { margin:0; font-size:1.8rem; font-weight:800; letter-spacing:-.02em; }
-.kt-hero p { margin:6px 0 0; opacity:.9; font-size:.95rem; }
-.kt-chip { display:inline-block; background:rgba(255,255,255,.18); padding:5px 13px; border-radius:999px;
-  font-size:.8rem; margin-top:12px; font-weight:500; }
+:root {
+  --espresso:#2e1c16; --walnut:#5d4037; --coffee:#6f4e37; --caramel:#b07a4f; --latte:#c9a17a;
+  --cream:#f7f1e8; --card:#ffffff; --ink:#2b211c; --muted:#9a8c80; --line:#ece3d8;
+  --now:#c0392b; --soon:#d98e04; --ok:#2f8f4e; --info:#2e86de;
+  --shadow:0 4px 18px rgba(70,45,30,.07); --shadow-lg:0 16px 40px rgba(70,45,30,.16);
+}
+html, body, [class*="css"], .stMarkdown, input, button, textarea { font-family:'Inter',sans-serif; }
+.stApp { background:
+  radial-gradient(1100px 520px at 88% -8%, rgba(176,122,79,.13), transparent 60%),
+  radial-gradient(900px 480px at -8% 6%, rgba(110,78,55,.10), transparent 55%),
+  #f7f1e8; color:var(--ink); }
+.block-container { padding-top:1.1rem; padding-bottom:2.4rem; max-width:1140px; }
+#MainMenu, footer, header { visibility:hidden; }
+::-webkit-scrollbar { width:11px; height:11px; }
+::-webkit-scrollbar-thumb { background:#d9cbbb; border-radius:99px; border:3px solid #f7f1e8; }
 
-.kt-kpis { display:flex; gap:14px; margin-bottom:20px; flex-wrap:wrap; }
-.kt-kpi { flex:1; min-width:150px; background:#fff; border-radius:16px; padding:18px 20px;
-  box-shadow:0 2px 12px rgba(0,0,0,.05); border-top:4px solid var(--ac,#1f8a70); }
-.kt-kpi .n { font-size:2rem; font-weight:800; line-height:1; color:#16202e; }
-.kt-kpi .l { color:#7a8290; font-size:.74rem; margin-top:7px; text-transform:uppercase; letter-spacing:.05em; font-weight:600; }
+/* —— HERO —— */
+.kt-hero { position:relative; overflow:hidden; color:#fff; border-radius:24px;
+  padding:30px 34px; margin-bottom:22px;
+  background:linear-gradient(120deg,#2e1c16 0%,#5d4037 52%,#8a5d3b 100%);
+  box-shadow:0 18px 44px rgba(46,28,22,.34); }
+.kt-hero::before { content:""; position:absolute; top:-90px; right:-60px; width:300px; height:300px;
+  background:radial-gradient(circle,rgba(201,161,122,.55),transparent 70%); filter:blur(6px); }
+.kt-hero::after { content:""; position:absolute; bottom:-120px; left:18%; width:320px; height:320px;
+  background:radial-gradient(circle,rgba(176,122,79,.35),transparent 70%); }
+.kt-hero > * { position:relative; z-index:1; }
+.kt-hero h1 { margin:0; font-family:'Fraunces',Georgia,serif; font-size:2.25rem; font-weight:600;
+  letter-spacing:-.01em; line-height:1.05; }
+.kt-hero p { margin:9px 0 0; opacity:.92; font-size:1rem; max-width:560px; line-height:1.5; }
+.kt-logoplate { display:inline-flex; align-items:center; justify-content:center; background:#fff;
+  border-radius:16px; padding:10px 18px; margin-bottom:14px; box-shadow:0 8px 22px rgba(0,0,0,.22); }
+.kt-logo { height:44px; display:block; }
+.kt-brand { display:inline-block; font-size:.74rem; font-weight:800; letter-spacing:.26em;
+  text-transform:uppercase; color:#f0e6da; margin-bottom:10px; }
+.kt-chip { display:inline-flex; align-items:center; gap:8px; background:rgba(255,255,255,.16);
+  backdrop-filter:blur(4px); padding:7px 15px; border-radius:999px; font-size:.83rem; margin-top:16px;
+  font-weight:600; border:1px solid rgba(255,255,255,.22); }
+.kt-livedot { width:9px; height:9px; border-radius:50%; background:#5be584; display:inline-block;
+  box-shadow:0 0 0 0 rgba(91,229,132,.7); animation:ktpulse 1.8s infinite; }
+@keyframes ktpulse { 0%{box-shadow:0 0 0 0 rgba(91,229,132,.6);} 70%{box-shadow:0 0 0 8px rgba(91,229,132,0);} 100%{box-shadow:0 0 0 0 rgba(91,229,132,0);} }
 
-.kt-card { background:#fff; border-radius:16px; padding:15px 18px; margin-bottom:13px;
-  box-shadow:0 2px 12px rgba(0,0,0,.05); display:flex; gap:18px; align-items:center; transition:.18s; }
-.kt-card:hover { box-shadow:0 10px 28px rgba(0,0,0,.13); transform:translateY(-2px); }
-.kt-card img { width:84px; height:84px; object-fit:contain; border-radius:12px; background:#f3f4f6; padding:5px; }
-.kt-noimg { width:84px; height:84px; border-radius:12px; background:#f3f4f6; }
+/* —— KPI cards —— */
+.kt-kpi { position:relative; background:var(--card); border:1px solid var(--line); border-radius:18px;
+  padding:18px 20px 16px; box-shadow:var(--shadow); transition:.18s;
+  border-top:4px solid var(--ac,var(--coffee)); }
+.kt-kpi:hover { box-shadow:var(--shadow-lg); transform:translateY(-3px); }
+.kt-kpi .n { font-family:'Fraunces',Georgia,serif; font-size:2.3rem; font-weight:700; line-height:1; color:var(--ink); }
+.kt-kpi .l { color:var(--muted); font-size:.74rem; margin-top:9px; text-transform:uppercase; letter-spacing:.06em; font-weight:700; }
+
+/* —— product cards —— */
+.kt-card { background:var(--card); border:1px solid var(--line); border-radius:18px; padding:16px 20px;
+  margin-bottom:14px; box-shadow:var(--shadow); display:flex; gap:18px; align-items:center; transition:.18s; }
+.kt-card:hover { box-shadow:var(--shadow-lg); transform:translateY(-2px); }
+.kt-card:hover img { transform:scale(1.05); transition:.18s; }
+.kt-card img { width:88px; height:88px; object-fit:contain; border-radius:14px; background:#f4efe7;
+  padding:6px; border:1px solid var(--line); }
+.kt-noimg { width:88px; height:88px; border-radius:14px; background:#f4efe7; border:1px solid var(--line); }
 .kt-body { flex:1; min-width:0; }
-.kt-title { font-weight:700; font-size:1.02rem; color:#16202e; line-height:1.25; }
-.kt-sub { color:#8a8f99; font-size:.8rem; margin-top:3px; }
-.kt-chips { margin-top:9px; }
-.kt-mc { display:inline-block; background:#f1f3f6; color:#566; border-radius:8px; padding:3px 9px;
-  font-size:.72rem; margin-right:6px; margin-top:5px; font-weight:500; }
-.kt-act { text-align:right; min-width:130px; }
-.kt-actnum { font-size:1.5rem; font-weight:800; letter-spacing:-.02em; }
-.kt-by { color:#9aa0aa; font-size:.78rem; margin-top:2px; }
-.kt-pill { display:inline-block; padding:3px 11px; border-radius:999px; font-size:.72rem; font-weight:700; }
-.kt-now { background:#ffe1e1; color:#c0392b; }
-.kt-soon { background:#fff2cf; color:#9a7400; }
-.kt-ok { background:#e0f3e3; color:#2e7d32; }
-.kt-none { background:#ececec; color:#888; }
-.kt-overdue { display:inline-block; background:#fff3cd; color:#856404; border-radius:8px;
-  padding:2px 9px; font-size:.72rem; margin-left:7px; font-weight:600; cursor:help; }
+.kt-title { font-weight:700; font-size:1.06rem; color:var(--ink); line-height:1.28; }
+.kt-sub { color:var(--muted); font-size:.82rem; margin-top:4px; }
+.kt-chips { margin-top:10px; }
+.kt-mc { display:inline-block; background:#f6efe6; color:#7a6a5c; border-radius:9px; padding:4px 10px;
+  font-size:.73rem; margin-right:6px; margin-top:5px; font-weight:600; cursor:help; border:1px solid #efe5d8; }
+.kt-act { text-align:right; min-width:140px; }
+.kt-actnum { font-family:'Fraunces',Georgia,serif; font-size:1.6rem; font-weight:700; letter-spacing:-.01em; }
+.kt-by { color:var(--muted); font-size:.78rem; margin-top:3px; }
+.kt-pill { display:inline-block; padding:4px 12px; border-radius:999px; font-size:.71rem; font-weight:800;
+  letter-spacing:.03em; }
+.kt-now { background:#fde4e1; color:var(--now); }
+.kt-soon { background:#fcefcf; color:#a06a00; }
+.kt-ok { background:#e1f3e7; color:var(--ok); }
+.kt-none { background:#eee8e0; color:#998a7c; }
+.kt-overdue { display:inline-block; background:#fcefcf; color:#8a6400; border-radius:9px;
+  padding:3px 10px; font-size:.72rem; margin-left:8px; font-weight:700; cursor:help; }
 .kt-link { color:inherit; text-decoration:none; }
-.kt-link:hover { text-decoration:underline; }
-.kt-skulink { color:#1f8a70; text-decoration:none; font-weight:600; }
+.kt-link:hover { color:var(--caramel); text-decoration:underline; }
+.kt-skulink { color:var(--caramel); text-decoration:none; font-weight:700; }
 .kt-skulink:hover { text-decoration:underline; }
-.kt-mc { cursor:help; }
-details.kt-why { margin-top:9px; }
-details.kt-why summary { cursor:pointer; color:#1f8a70; font-size:.8rem; font-weight:600; list-style:none; }
+
+details.kt-why { margin-top:11px; }
+details.kt-why summary { cursor:pointer; color:var(--caramel); font-size:.82rem; font-weight:700; list-style:none; }
 details.kt-why summary::before { content:"💡 "; }
-details.kt-why div { background:#f7f9fa; border:1px solid #eaeef0; border-radius:10px; padding:11px 13px;
-  margin-top:7px; color:#445; font-size:.82rem; white-space:pre-wrap; line-height:1.5; }
-.stTabs [data-baseweb="tab-list"] { gap:6px; }
-.stTabs [data-baseweb="tab"] { font-weight:600; border-radius:10px 10px 0 0; }
-.kt-brand { font-size:.72rem; font-weight:800; letter-spacing:.24em; opacity:.85;
-  text-transform:uppercase; margin-bottom:6px; }
-.kt-foot { text-align:center; color:#9aa3ad; font-size:.78rem; margin:28px 0 8px; }
-.kt-card { border:1px solid #eef0f3; }
-.kt-kpi { border:1px solid #eef0f3; }
-.kt-card:hover img { transform:scale(1.04); transition:.18s; }
+details.kt-why div { background:#faf5ee; border:1px solid var(--line); border-radius:12px; padding:12px 14px;
+  margin-top:8px; color:#5a4d42; font-size:.83rem; white-space:pre-wrap; line-height:1.55; }
+
+/* —— stock-breakdown mini-bar —— */
+.kt-bar { display:flex; height:8px; border-radius:99px; overflow:hidden; margin-top:11px;
+  background:#efe7db; max-width:440px; }
+.kt-bar span { height:100%; }
+.kt-barkey { font-size:.69rem; color:var(--muted); margin-top:6px; }
+.kt-barkey i { font-style:normal; }
+.kt-dot { display:inline-block; width:9px; height:9px; border-radius:3px; margin:0 4px 0 10px; vertical-align:middle; }
+
+/* —— detail page —— */
+.kt-back { color:var(--caramel); font-weight:700; text-decoration:none; font-size:.95rem; }
+.kt-back:hover { text-decoration:underline; }
+.kt-foot { text-align:center; color:var(--muted); font-size:.8rem; margin:34px 0 8px; }
+
+/* —— Streamlit native widgets, themed —— */
+.stButton > button { border-radius:12px; font-weight:700; border:1px solid var(--line);
+  background:#fff; color:var(--coffee); transition:.15s; box-shadow:0 1px 3px rgba(70,45,30,.05); }
+.stButton > button:hover { border-color:var(--caramel); color:var(--espresso);
+  box-shadow:0 6px 16px rgba(176,122,79,.22); transform:translateY(-1px); }
+.stTabs [data-baseweb="tab-list"] { gap:6px; background:#efe6db; padding:6px; border-radius:14px;
+  border:1px solid var(--line); }
+.stTabs [data-baseweb="tab"] { font-weight:700; border-radius:10px; color:#8a7866; padding:8px 16px; }
+.stTabs [data-baseweb="tab"]:hover { color:var(--espresso); }
+.stTabs [aria-selected="true"] { background:linear-gradient(120deg,#5d4037,#8a5d3b);
+  color:#fff !important; box-shadow:0 4px 12px rgba(93,64,55,.3); }
+.stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] { display:none; }
+.stTextInput input, .stNumberInput input, .stSelectbox div[data-baseweb="select"] > div {
+  border-radius:11px !important; border-color:var(--line) !important; }
+[data-testid="stMetric"] { background:#fff; border:1px solid var(--line); border-radius:14px;
+  padding:12px 16px; box-shadow:var(--shadow); }
+[data-testid="stMetricValue"] { font-family:'Fraunces',Georgia,serif; color:var(--ink); }
+[data-testid="stExpander"] { border:1px solid var(--line); border-radius:14px; background:#fff;
+  box-shadow:var(--shadow); margin-bottom:8px; }
+[data-testid="stExpander"] summary { font-size:1.05rem; font-weight:700; padding:10px 6px; }
+[data-testid="stExpander"] summary:hover { color:var(--espresso); }
+[data-testid="stExpander"] summary p { font-size:1.05rem; }
+[data-testid="stSidebar"] { background:#fbf6ef; border-right:1px solid var(--line); }
+div[data-testid="stAlert"] { border-radius:13px; }
+
 @media (max-width: 640px) {
+  .kt-hero { padding:22px; } .kt-hero h1 { font-size:1.7rem; }
   .kt-card { flex-wrap:wrap; gap:12px; }
   .kt-act { text-align:left; min-width:100%; margin-top:4px; }
-  .kt-kpi { min-width:46%; }
   .block-container { padding-left:.6rem; padding-right:.6rem; }
 }
-/* —— warm KitchenToolz brand theme —— */
-.stApp { background:#f6f3ee; }
-.kt-hero { background:linear-gradient(120deg,#3e2723 0%,#7a5239 100%); box-shadow:0 10px 30px rgba(62,39,35,.28); }
-.kt-brand { color:#f0e6da; }
-.kt-logo { height:48px; margin-bottom:10px; display:block; }
-/* stock-breakdown mini-bar */
-.kt-bar { display:flex; height:7px; border-radius:99px; overflow:hidden; margin-top:10px; background:#eef0f3; max-width:420px; }
-.kt-bar span { height:100%; }
-.kt-barkey { font-size:.66rem; color:#9aa0aa; margin-top:4px; }
-.kt-barkey i { font-style:normal; }
-.kt-dot { display:inline-block; width:8px; height:8px; border-radius:2px; margin:0 3px 0 9px; vertical-align:middle; }
-/* product detail page */
-.kt-back { color:#7a5239; font-weight:700; text-decoration:none; font-size:.95rem; }
-.kt-back:hover { text-decoration:underline; }
-.kt-detail { background:#fff; border-radius:18px; padding:8px 4px; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
@@ -230,6 +283,10 @@ def card_html(row, action_html, why_field):
         (f"Cover {_int(row.get('Days of cover'))}d", "Total days your whole pipeline will last"),
     ]
     chips = "".join(f'<span class="kt-mc" title="{html.escape(t)}">{c}</span>' for c, t in chip_data)
+    _size = str(row.get("Size", "")).strip().lower()
+    if _size:
+        _slabel = "🛒 Oversize" if _size == "oversize" else "📦 Standard"
+        chips += f'<span class="kt-mc" title="Size class (from Sky\'s Standard/Oversize tabs)">{_slabel}</span>'
     overdue = (f'<span class="kt-overdue" title="These in-production units are overdue at Sky — chase him">'
                f'⚠️ {_int(row.get("Overdue days"))}d overdue at Sky</span>'
                if _int(row.get("Overdue days")) > 0 else "")
@@ -244,8 +301,9 @@ def card_html(row, action_html, why_field):
     bar = "".join(f'<span style="width:{v / _tot * 100:.1f}%;background:{c}" title="{lbl}: {v:,}"></span>'
                   for v, c, lbl in seg if v > 0)
     bar_html = f'<div class="kt-bar">{bar}</div>' if bar else ""
+    edge = {"order now": "#c0392b", "order soon": "#d98e04", "ok": "#2f8f4e"}.get(prio, "#e6dccf")
     return (
-        f'<div class="kt-card">{imgtag}<div class="kt-body">'
+        f'<div class="kt-card" style="border-left:5px solid {edge}">{imgtag}<div class="kt-body">'
         f'<div><span class="kt-pill {pill_cls}">{pill_txt}</span>{overdue}</div>'
         f'<div class="kt-title">{title_html}</div>'
         f'<div class="kt-sub">{sub}</div>'
@@ -307,9 +365,9 @@ def show_detail(df, sku):
         emoji = EMOJI.get(str(r.get("Priority", "")), "")
         st.markdown(f"### {emoji} {r.get('What to do', '')}")
         asin = str(r.get("ASIN", "")).strip()
-        line = f"`{r['SKU']}` · 🏭 {r['Supplier']}"
+        line = f"[{r['SKU']}]({seller_central_url(r['SKU'])}) · 🏭 {r['Supplier']}"
         if asin:
-            line += f" · [🔗 View on Amazon](https://www.amazon.com/dp/{asin})"
+            line += f" · [🛒 View on Amazon](https://www.amazon.com/dp/{asin})"
         st.markdown(line)
         g = lambda k: f"{_int(r.get(k)):,}"
         a, b, c = st.columns(3)
@@ -388,9 +446,11 @@ if stale:
         '<div style="background:#fff3cd;color:#856404;border-radius:12px;padding:12px 16px;'
         'margin-bottom:14px;font-weight:600;border:1px solid #ffe69c;">⚠️ These numbers may be out of '
         f'date — last refreshed {ago}. Ask Shimon to run the morning update.</div>', unsafe_allow_html=True)
-chip = (f"🟢 Updated {ago} · {len(df)} products tracked" if ago else f"🟢 Live data · {len(df)} products tracked")
+_txt = (f"Updated {ago} · {len(df)} products tracked" if ago else f"Live data · {len(df)} products tracked")
+chip = f'<span class="kt-livedot"></span>{_txt}'
 _logo = logo_uri()
-brand = f'<img class="kt-logo" src="{_logo}">' if _logo else '<div class="kt-brand">🍴 KitchenToolz</div>'
+brand = (f'<div class="kt-logoplate"><img class="kt-logo" src="{_logo}"></div>' if _logo
+         else '<div class="kt-brand">🍴 KitchenToolz</div>')
 st.markdown(
     f'<div class="kt-hero">{brand}'
     '<h1>China Reorder Command Center</h1>'
@@ -398,58 +458,186 @@ st.markdown(
     f'<span class="kt-chip">{chip}</span></div>',
     unsafe_allow_html=True)
 
-st.markdown(
-    '<div class="kt-kpis">'
-    f'<div class="kt-kpi" style="--ac:#1f6f3d"><div class="n">{len(ship)}</div><div class="l">🚢 To ship now</div></div>'
-    f'<div class="kt-kpi" style="--ac:#c0392b"><div class="n">{len(reorder)}</div><div class="l">🏭 To reorder</div></div>'
-    f'<div class="kt-kpi" style="--ac:#e0a800"><div class="n">{n_overdue}</div><div class="l">⚠️ Overdue at Sky</div></div>'
-    f'<div class="kt-kpi" style="--ac:#2e86de"><div class="n">{otw_total:,}</div><div class="l">📦 Units on the way</div></div>'
-    '</div>', unsafe_allow_html=True)
+st.caption("Tap a box to see the products or shipments behind the number.")
 
-st.markdown(
-    '<div class="kt-barkey">Stock bar on each card: '
-    '<span class="kt-dot" style="background:#2e86de"></span><i>In FBA</i>'
-    '<span class="kt-dot" style="background:#1f8a70"></span><i>On the way</i>'
-    '<span class="kt-dot" style="background:#e0a800"></span><i>China</i>'
-    '<span class="kt-dot" style="background:#9b59b6"></span><i>In production</i>'
-    '&nbsp;·&nbsp; click a product name for full details</div>', unsafe_allow_html=True)
 
-tab_ship, tab_order, tab_all = st.tabs(
-    [f"🚢 Ship to FBA · {len(ship)}", f"🏭 Reorder · {len(reorder)}", f"📋 All products · {len(df)}"])
+@st.cache_data(ttl=600, show_spinner=False)
+def load_inbound():
+    """The 'Inbound Shipments' tab (written by the morning pipeline from 9Yards)."""
+    try:
+        ws = _gclient().open_by_key(config.CHINA_SHEET_ID).worksheet("Inbound Shipments")
+        return pd.DataFrame(ws.get_all_records())
+    except Exception:
+        return pd.DataFrame()
+
+
+def _mini_table(frame, cols):
+    show = frame[[c for c in cols if c in frame.columns]]
+    if show.empty:
+        st.caption("Nothing here right now. ✅")
+    else:
+        st.dataframe(show, hide_index=True, use_container_width=True)
+
+
+with st.expander(f"🚢  &nbsp; :green[**{len(ship)}**] &nbsp; TO SHIP NOW"):
+    _mini_table(ship, ["Product", "SKU", "Ship qty", "FBA days left", "Size", "Supplier"])
+
+with st.expander(f"🏭  &nbsp; :red[**{len(reorder)}**] &nbsp; TO REORDER"):
+    _mini_table(reorder, ["Product", "SKU", "Order qty", "Priority", "Order by", "Supplier"])
+
+with st.expander(f"⚠️  &nbsp; :orange[**{n_overdue}**] &nbsp; OVERDUE AT SKY"):
+    if "Overdue days" in df.columns:
+        _od = df[df["Overdue days"].apply(_int) > 0].copy()
+        _od["_o"] = _od["Overdue days"].apply(_int)
+        _od = _od.sort_values("_o", ascending=False)
+    else:
+        _od = df.iloc[0:0]
+    _mini_table(_od, ["Product", "SKU", "In production", "Overdue days", "Supplier"])
+
+_STATUS_LABEL = {
+    "WORKING": "📝 Working (not shipped yet)", "SHIPPED": "🚚 Shipped",
+    "IN_TRANSIT": "🚚 In transit", "RECEIVING": "📥 Receiving at FBA",
+    "DELIVERED": "✅ Delivered",
+}
+
+with st.expander(f"📦  &nbsp; :blue[**{otw_total:,}**] &nbsp; UNITS ON THE WAY"):
+    _inb = load_inbound()
+    if not _inb.empty and "SKU" in _inb.columns:
+        # only show shipments for SKUs that are part of the China reorder dashboard
+        _china = set(df["SKU"].astype(str).str.strip())
+        _inb = _inb[_inb["SKU"].astype(str).str.strip().isin(_china)]
+    if _inb.empty or "Shipment ID" not in _inb.columns:
+        st.caption("No shipment detail for China SKUs yet — it appears after the next morning update.")
+    else:
+        _inb = _inb.copy()
+        _inb["Open in Amazon"] = _inb["Shipment ID"].astype(str).apply(
+            lambda x: f"https://sellercentral.amazon.com/fba/inbound-shipment/summary/{x}/shipmentEvents"
+            if x.strip() else "")
+        if "9Yards ID" in _inb.columns:
+            _inb["Open in 9Yards"] = _inb["9Yards ID"].astype(str).apply(
+                lambda x: f"https://app.nineyard.com/shipyard/shipments/detail/{x}"
+                if x.strip() and x.strip().lower() != "nan" else "")
+        if "Status" in _inb.columns:
+            _inb["Status"] = _inb["Status"].astype(str).apply(lambda s: _STATUS_LABEL.get(s.strip().upper(), s))
+        _units = int(_inb["Units on the way"].apply(_int).sum())
+        st.caption(f"**{_inb['Shipment ID'].nunique()} shipments · {_units:,} units.** "
+                   "Open a shipment in Amazon Seller Central or in 9Yards (you must be logged in). "
+                   "Sort by Status or Shipment ID to group.")
+        _cols = ["Shipment ID", "Shipment name", "Status", "Type", "SKU", "Units on the way",
+                 "Open in Amazon", "Open in 9Yards"]
+        st.dataframe(
+            _inb[[c for c in _cols if c in _inb.columns]],
+            hide_index=True, use_container_width=True,
+            column_config={
+                "Open in Amazon": st.column_config.LinkColumn("Seller Central", display_text="View ↗"),
+                "Open in 9Yards": st.column_config.LinkColumn("9Yards", display_text="View ↗"),
+                "Units on the way": st.column_config.NumberColumn(format="%d"),
+            })
+
+# ---- AI daily briefing ----------------------------------------------------
+_ai_csv = ai.table(df)
+
+
+@st.cache_data(ttl=86400, show_spinner="🤖 Writing today's briefing…")
+def cached_briefing(csv, ship_n, reorder_n, overdue_n, _stamp):
+    return ai.daily_briefing(csv, ship_n, reorder_n, overdue_n)
+
+
+with st.expander("📰  Today's AI briefing", expanded=False):
+    if not ai.have_key():
+        st.info("🤖 Add your free Gemini key to switch this on — see the **🤖 Ask AI** tab for setup steps.")
+    elif not st.session_state.get("brief_ready"):
+        # Don't call the AI on page load — keep the dashboard snappy. Generate on click.
+        st.caption("Click to generate today's plain-English summary (takes a few seconds).")
+        if st.button("✨ Generate today's briefing", key="brief_go"):
+            st.session_state["brief_ready"] = True
+            st.rerun()
+    else:
+        try:
+            st.markdown(cached_briefing(_ai_csv, len(ship), len(reorder), n_overdue, ago or "live"))
+            if st.button("↻ Regenerate", key="brief_regen"):
+                cached_briefing.clear()
+                st.rerun()
+        except Exception as e:
+            st.warning(f"Couldn't generate the briefing right now ({type(e).__name__}). "
+                       "Check the API key on the **🤖 Ask AI** tab.")
+
+tab_ship, tab_order, tab_all, tab_ai = st.tabs(
+    [f"🚢 Ship to FBA · {len(ship)}", f"🏭 Reorder · {len(reorder)}",
+     f"📋 All products · {len(df)}", "🤖 Ask AI"])
+
+def _cbm_unit(r):
+    try:
+        return float(r.get("CBM/unit", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def ship_group(frame, title):
+    """Render one shipment group (Standard or Oversize) with a live CBM total."""
+    if frame.empty:
+        return
+    skus = [str(s) for s in frame["SKU"]]
+    paste = "\n".join(f"{s}\t{int(st.session_state['shq_'+s])}"
+                      for s in skus if int(st.session_state["shq_" + s]) > 0)
+    tot_cbm = sum(_cbm_unit(r) * int(st.session_state["shq_" + str(r["SKU"])]) for _, r in frame.iterrows())
+    n_units = sum(int(st.session_state["shq_" + s]) for s in skus)
+    st.markdown(f"#### {title} &nbsp;·&nbsp; {len(frame)} SKUs &nbsp;·&nbsp; "
+                f"{n_units:,} units &nbsp;·&nbsp; 📦 **{tot_cbm:.2f} CBM**")
+    copy_button(paste, label=f"📋  Copy {title} for 9Yards")
+    with st.expander("…or copy manually"):
+        st.code(paste or "(nothing to ship)", language=None)
+    for _, r in frame.iterrows():
+        sku = str(r["SKU"])
+        c1, c2, c3 = st.columns([1, 4.3, 1.8], vertical_alignment="center")
+        with c1:
+            if str(r.get("Image", "")).startswith("http"):
+                st.image(r["Image"], width=58)
+        with c2:
+            asin = str(r.get("ASIN", "")).strip()
+            amz = f"https://www.amazon.com/dp/{asin}" if asin else ""
+            title_ = f"[{str(r['Product'])[:60]}]({amz})" if amz else str(r["Product"])[:60]
+            st.markdown(f"**{title_}**")
+            bits = [f"[{sku}]({seller_central_url(sku)})", f"🏭 {r['Supplier']}"]
+            if amz:
+                bits.append(f"[🛒 {asin}]({amz})")
+            bits += [f"FBA {_int(r['FBA days left'])}d left", f"China {_int(r['China warehouse']):,}",
+                     f"cover {_int(r['Days of cover'])}d"]
+            st.caption(" · ".join(bits))
+            why = str(r.get("Why ship", "")).strip()
+            if why:
+                with st.expander("Why this number?"):
+                    st.write(why)
+        with c3:
+            st.number_input("Ship qty", min_value=0, step=10, key="shq_" + sku)
+            cu = _cbm_unit(r)
+            st.caption(f"📦 {cu * int(st.session_state['shq_'+sku]):.2f} CBM" if cu > 0 else "CBM n/a")
+
 
 with tab_ship:
     if ship.empty:
         st.success("Nothing to ship right now. ✅")
     else:
-        ship_skus = [str(s) for s in ship["SKU"]]
-        for sku, q in zip(ship_skus, ship["Ship qty"]):
+        for sku, q in zip([str(s) for s in ship["SKU"]], ship["Ship qty"]):
             st.session_state.setdefault("shq_" + sku, _int(q))
-        paste = "\n".join(f"{sku}\t{int(st.session_state['shq_'+sku])}"
-                          for sku in ship_skus if int(st.session_state["shq_" + sku]) > 0)
-        copy_button(paste)
-        st.caption("Adjust any quantity below (use +/– or type), then hit the green button → paste into "
-                   "9Yards → Add SKU → **Paste Bulk**.")
-        with st.expander("…or copy manually"):
-            st.code(paste or "(nothing to ship)", language=None)
-        st.divider()
-        for _, r in ship.iterrows():
-            sku = str(r["SKU"])
-            c1, c2, c3 = st.columns([1, 4.5, 1.6], vertical_alignment="center")
-            with c1:
-                if str(r.get("Image", "")).startswith("http"):
-                    st.image(r["Image"], width=58)
-            with c2:
-                amz = f"https://www.amazon.com/dp/{r['ASIN']}" if str(r.get("ASIN", "")).strip() else ""
-                title = f"[{str(r['Product'])[:64]}]({amz})" if amz else str(r["Product"])[:64]
-                st.markdown(f"**{title}**")
-                st.caption(f"`{sku}` · 🏭 {r['Supplier']} · FBA {_int(r['FBA days left'])}d left · "
-                           f"China {_int(r['China warehouse']):,} · cover {_int(r['Days of cover'])}d")
-                why = str(r.get("Why ship", "")).strip()
-                if why:
-                    with st.expander("Why this number?"):
-                        st.write(why)
-            with c3:
-                st.number_input("Ship qty", min_value=0, step=10, key="shq_" + sku)
+        st.caption("Adjust any quantity (use +/– or type), then hit the green button → paste into "
+                   "9Yards → Add SKU → **Paste Bulk**. CBM totals update as you change quantities.")
+        if "Size" in ship.columns:
+            _is_ovr = ship["Size"].astype(str).str.strip().str.lower().eq("oversize")
+        else:
+            _is_ovr = pd.Series(False, index=ship.index)
+        std_f, ovr_f = ship[~_is_ovr], ship[_is_ovr]
+        sub_std, sub_ovr = st.tabs([f"📦 Standard · {len(std_f)}", f"🛒 Oversize · {len(ovr_f)}"])
+        with sub_std:
+            if std_f.empty:
+                st.success("No standard-size items to ship right now. ✅")
+            else:
+                ship_group(std_f, "📦 Standard size")
+        with sub_ovr:
+            if ovr_f.empty:
+                st.success("No oversize items to ship right now. ✅")
+            else:
+                ship_group(ovr_f, "🛒 Oversize")
 
 def supplier_filter(frame, key):
     sups = sorted(s for s in frame["Supplier"].unique() if str(s).strip() and s != "—")
@@ -477,6 +665,79 @@ with tab_all:
         view = view[view.apply(lambda r: ql in str(r["Product"]).lower() or ql in str(r["SKU"]).lower(), axis=1)]
     render(view, lambda r: f'<div class="kt-actnum" style="font-size:1.05rem">{EMOJI.get(str(r.get("Priority","")),"")} '
                            f'{html.escape(str(r.get("What to do","")))}</div>', "Why order")
+
+
+@st.cache_data(ttl=86400, show_spinner="🤖 Thinking up product ideas…")
+def cached_ideas(csv, _stamp):
+    return ai.product_ideas(csv)
+
+
+@st.cache_data(ttl=86400, show_spinner="🔎 Researching the market on the web… (~30s)")
+def cached_research(csv, focus, _stamp):
+    return ai.research(csv, focus)
+
+
+with tab_ai:
+    if not ai.have_key():
+        st.subheader("🤖 Turn on the AI assistant")
+        st.markdown(
+            "The AI briefing, chat, and product ideas use **Google Gemini's free tier**. "
+            "Grab a free key (no credit card) and paste it in:\n\n"
+            "1. Go to **https://aistudio.google.com/apikey** and sign in with your Google account.\n"
+            "2. Click **Create API key** → copy it (starts with `AIza…`).\n"
+            "3. **Local PC:** create a file `.streamlit/secrets.toml` next to the app with:\n"
+            "   ```toml\n   gemini_api_key = \"AIza-your-key-here\"\n   ```\n"
+            "   **Cloud (the shared site):** Streamlit → Manage app → **Settings → Secrets**, "
+            "paste the same line, save.\n"
+            "4. Refresh — this tab turns into a chat box.\n\n"
+            "_Free at your volume. (Want top quality instead? A paid Anthropic key also works — "
+            "set `anthropic_api_key` instead.)_")
+    else:
+        st.caption("Ask anything about your inventory — it answers from your live data.")
+        if "chat" not in st.session_state:
+            st.session_state.chat = []
+        for role, content in st.session_state.chat:
+            with st.chat_message(role):
+                st.markdown(content)
+        prompt = st.chat_input("e.g. What should I order this week? What's most at risk of selling out?")
+        if prompt:
+            st.session_state.chat.append(("user", prompt))
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking…"):
+                    try:
+                        reply = ai.answer(_ai_csv, prompt, st.session_state.chat[:-1])
+                    except Exception as e:
+                        reply = f"Sorry — I couldn't answer just now ({type(e).__name__}). Check the API key."
+                st.markdown(reply)
+            st.session_state.chat.append(("assistant", reply))
+        if st.session_state.chat:
+            cc1, _ = st.columns([1, 3])
+            with cc1:
+                if st.button("🧹 Clear chat", use_container_width=True):
+                    st.session_state.chat = []
+                    st.rerun()
+
+        with st.expander("🧰 More AI tools — product ideas & market research"):
+            st.markdown("**💡 New-product ideas** — quick suggestions from your own catalog. Instant.")
+            if st.button("✨ Suggest product ideas"):
+                try:
+                    st.markdown(cached_ideas(_ai_csv, ago or "live"))
+                except Exception as e:
+                    st.warning(f"Couldn't generate ideas right now ({type(e).__name__}).")
+
+            st.divider()
+            st.markdown("**🔎 Market research (web)** — trends, competitors, gaps, review complaints, tied "
+                        "back to your line. ~30s. Directional only — verify top picks in Helium 10.")
+            focus = st.text_input("Optional — narrow the focus",
+                                  placeholder="e.g. airtight coffee canisters, glass vs acrylic")
+            if st.button("🔎 Research opportunities"):
+                try:
+                    st.markdown(cached_research(_ai_csv, focus.strip(), ago or "live"))
+                except Exception as e:
+                    st.warning(f"Couldn't run web research right now ({type(e).__name__}). "
+                               "The free tier may limit web searches — the catalog ideas always work.")
 
 st.markdown('<div class="kt-foot">KitchenToolz · China Reorder Dashboard · updates every morning</div>',
             unsafe_allow_html=True)
