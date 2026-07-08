@@ -30,7 +30,8 @@ def _gclient():
     from fetch import get_client   # local development fallback
     return get_client()
 
-st.set_page_config(page_title="Kitchentoolz Reorder", page_icon="📦", layout="wide")
+st.set_page_config(page_title="KitchenToolz Reorder", page_icon="📦", layout="wide",
+                   initial_sidebar_state="collapsed")
 
 CSS = """
 <style>
@@ -48,7 +49,12 @@ html, body, [class*="css"], .stMarkdown, input, button, textarea { font-family:'
   radial-gradient(900px 480px at -8% 6%, rgba(110,78,55,.10), transparent 55%),
   #f7f1e8; color:var(--ink); }
 .block-container { padding-top:1.1rem; padding-bottom:2.4rem; max-width:1140px; }
-#MainMenu, footer, header { visibility:hidden; }
+#MainMenu, footer { visibility:hidden; }
+/* keep the header/toolbar VISIBLE — they hold the open-sidebar » arrow — but hide
+   Streamlit's own action buttons (Deploy, menu) and the rainbow decoration bar */
+[data-testid="stHeader"] { background:transparent; }
+.stToolbarActions, [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
+[data-testid="stDecoration"], [data-testid="stStatusWidget"] { display:none; }
 ::-webkit-scrollbar { width:11px; height:11px; }
 ::-webkit-scrollbar-thumb { background:#d9cbbb; border-radius:99px; border:3px solid #f7f1e8; }
 
@@ -159,6 +165,16 @@ details.kt-why div { background:#faf5ee; border:1px solid var(--line); border-ra
 [data-testid="stSidebar"] { background:#fbf6ef; border-right:1px solid var(--line); }
 div[data-testid="stAlert"] { border-radius:13px; }
 
+/* —— KPI stat boxes (clickable popovers, scoped to the kpirow container) —— */
+.st-key-kpirow [data-testid="stPopover"] { width:100%; }
+.st-key-kpirow [data-testid="stPopover"] > div { width:100%; }
+.st-key-kpirow [data-testid="stPopover"] button { width:100%; background:#fff; border:1px solid var(--line);
+  border-radius:16px; padding:18px 10px; font-weight:800; font-size:1.05rem; color:var(--ink);
+  box-shadow:var(--shadow); transition:.15s; justify-content:center; }
+.st-key-kpirow [data-testid="stPopover"] button:hover { transform:translateY(-2px); box-shadow:var(--shadow-lg);
+  border-color:var(--caramel); color:var(--ink); }
+[data-testid="stPopoverBody"] { min-width:min(760px, 92vw); border-radius:16px; }
+
 @media (max-width: 640px) {
   .kt-hero { padding:22px; } .kt-hero h1 { font-size:1.7rem; }
   .kt-card { flex-wrap:wrap; gap:12px; }
@@ -198,6 +214,34 @@ def load_discontinued():
         return {str(r.get("SKU", "")).strip() for r in ws.get_all_records() if str(r.get("SKU", "")).strip()}
     except Exception:
         return set()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_inbound():
+    """The 'Inbound Shipments' tab (written by the morning pipeline from 9Yards)."""
+    try:
+        ws = _gclient().open_by_key(config.CHINA_SHEET_ID).worksheet("Inbound Shipments")
+        return pd.DataFrame(ws.get_all_records())
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_ppc():
+    """The 'PPC Suggestions' tab (written by the morning pipeline from Amazon Ads).
+    Empty until the Ads connection is set up and the pipeline has run once."""
+    try:
+        ws = _gclient().open_by_key(config.CHINA_SHEET_ID).worksheet("PPC Suggestions")
+        return pd.DataFrame(ws.get_all_records())
+    except Exception:
+        return pd.DataFrame()
+
+
+_STATUS_LABEL = {
+    "WORKING": "📝 Working (not shipped yet)", "SHIPPED": "🚚 Shipped",
+    "IN_TRANSIT": "🚚 In transit", "RECEIVING": "📥 Receiving at FBA",
+    "DELIVERED": "✅ Delivered",
+}
 
 
 def _disc_ws():
@@ -290,6 +334,11 @@ def card_html(row, action_html, why_field):
     overdue = (f'<span class="kt-overdue" title="These in-production units are overdue at Sky — chase him">'
                f'⚠️ {_int(row.get("Overdue days"))}d overdue at Sky</span>'
                if _int(row.get("Overdue days")) > 0 else "")
+    _basis = str(row.get("Demand basis", "")).strip().lower()
+    if _basis in ("past sales", "your estimate"):
+        overdue += (f'<span class="kt-overdue" style="background:#e7dcff;color:#5b3a9b" '
+                    f'title="Out of stock at Amazon — this is flagged from {_basis}, not current sales">'
+                    f'📊 out of stock · from {_basis}</span>')
     why = str(row.get(why_field, "")).strip()
     why_html = (f'<details class="kt-why"><summary>Why this number?</summary>'
                 f'<div>{html.escape(why)}</div></details>') if why else ""
@@ -320,11 +369,13 @@ def render(rows, action_fn, why_field):
                 unsafe_allow_html=True)
 
 
-def copy_button(text, label="📋  Copy all for 9Yards"):
+def copy_button(text, label="📋  Copy all for 9Yards",
+                done_msg="✓ Copied! Paste into 9Yards → Paste Bulk.", height=62):
     """A big, fancy one-click 'copy to clipboard' button (works inside Streamlit's iframe)."""
     import json as _json
     import streamlit.components.v1 as components
     payload = _json.dumps(text)
+    done = _json.dumps(done_msg)
     components.html(f"""
       <style>
         .cpybtn {{ background:linear-gradient(120deg,#1f8a70,#0f3d5e); color:#fff; border:none;
@@ -342,20 +393,96 @@ def copy_button(text, label="📋  Copy all for 9Yards"):
           ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.focus(); ta.select();
           let ok=false; try {{ ok=document.execCommand('copy'); }} catch(e) {{}}
           document.body.removeChild(ta);
-          document.getElementById('m').innerText = ok ? '✓ Copied! Paste into 9Yards → Paste Bulk.' : 'Select the box below and press Ctrl+C.';
+          document.getElementById('m').innerText = ok ? {done} : 'Copy failed — select the text and press Ctrl+C.';
         }}
       </script>
-    """, height=62)
+    """, height=height)
 
 
-def show_detail(df, sku):
-    """A full detail 'page' for one product (opened by clicking a product name)."""
-    st.markdown('<a class="kt-back" href="?" target="_self">← Back to dashboard</a>', unsafe_allow_html=True)
-    m = df[df["SKU"].astype(str) == str(sku)]
-    if m.empty:
-        st.warning(f"Product '{sku}' isn't on the dashboard right now.")
+def unit_math_text(r):
+    """The pipeline arithmetic for one product, laid out so the columns line up —
+    every unit, where it is, added up, then divided by the sales pace into days."""
+    fba = _int(r.get("In FBA"))
+    otw = _int(r.get("On the way"))
+    ch = _int(r.get("China warehouse"))
+    prod = _int(r.get("In production"))
+    total = fba + otw + ch + prod
+    cover = _int(r.get("Days of cover"))
+    try:
+        vel = float(str(r.get("Sells per day", 0)).replace(",", ""))
+    except (ValueError, TypeError):
+        vel = 0.0
+
+    def n(x):
+        return f"{x:>9,}"
+
+    lines = [
+        "WHERE YOUR UNITS ARE",
+        f"  In FBA  (at Amazon)        {n(fba)}",
+        f"  On the way to Amazon       {n(otw)}",
+        f"  China warehouse  (Sky)     {n(ch)}",
+        f"  In production    (Sky)     {n(prod)}",
+        "  " + "─" * 34,
+        f"  Total pipeline             {n(total)}  units",
+        "",
+        "HOW LONG THAT LASTS",
+    ]
+    if vel > 0:
+        lines.append(f"  {total:,} units  ÷  {vel:g}/day   =   {cover:,} days of cover")
+    else:
+        lines.append("  No sales right now — days of cover not applicable.")
+    return "\n".join(lines)
+
+
+def render_inbound_table(rows, show_sku=True):
+    """One inbound-shipments table with Seller Central + 9Yards links and friendly
+    statuses. Shared by the 'Units on the way' stat box and the product breakdown."""
+    rows = rows.copy()
+    rows["Open in Amazon"] = rows["Shipment ID"].astype(str).apply(
+        lambda x: f"https://sellercentral.amazon.com/fba/inbound-shipment/summary/{x}/shipmentEvents"
+        if x.strip() else "")
+    if "9Yards ID" in rows.columns:
+        rows["Open in 9Yards"] = rows["9Yards ID"].astype(str).apply(
+            lambda x: f"https://app.nineyard.com/shipyard/shipments/detail/{x}"
+            if x.strip() and x.strip().lower() != "nan" else "")
+    if "Status" in rows.columns:
+        rows["Status"] = rows["Status"].astype(str).apply(
+            lambda s: _STATUS_LABEL.get(s.strip().upper(), s))
+    units = int(rows["Units on the way"].apply(_int).sum()) if "Units on the way" in rows.columns else 0
+    st.caption(f"**{rows['Shipment ID'].nunique()} shipment(s) · {units:,} units.** "
+               "Open a shipment in Amazon Seller Central or 9Yards (you must be logged in).")
+    cols = ["Shipment ID", "Shipment name", "Status", "Type"] + (["SKU"] if show_sku else []) + \
+           ["Units on the way", "Open in Amazon", "Open in 9Yards"]
+    st.dataframe(
+        rows[[c for c in cols if c in rows.columns]],
+        hide_index=True, use_container_width=True,
+        column_config={
+            "Open in Amazon": st.column_config.LinkColumn("Seller Central", display_text="View ↗"),
+            "Open in 9Yards": st.column_config.LinkColumn("9Yards", display_text="View ↗"),
+            "Units on the way": st.column_config.NumberColumn(format="%d"),
+        })
+
+
+def show_otw_shipments(r):
+    """Break one product's 'On the way' number down into its inbound shipments."""
+    otw = _int(r.get("On the way"))
+    if otw <= 0:
         return
-    r = m.iloc[0]
+    inb = load_inbound()
+    sku = str(r.get("SKU", "")).strip()
+    rows = (inb[inb["SKU"].astype(str).str.strip() == sku]
+            if not inb.empty and "SKU" in inb.columns else inb.iloc[0:0])
+    st.markdown(f"#### 🚚 The {otw:,} on the way — which shipments")
+    if rows.empty or "Shipment ID" not in rows.columns:
+        st.caption("Per-shipment detail will appear after the next morning update.")
+        return
+    render_inbound_table(rows, show_sku=False)
+
+
+def product_card(r):
+    """The full single-product breakdown: photo, headline action, the numbers,
+    the math spelled out, and the plain-English 'why'. Shared by the detail page
+    (click a product) and the 🔎 Look up tab (type an ASIN or SKU)."""
     st.markdown(f"## {r['Product']}")
     c1, c2 = st.columns([1, 2], vertical_alignment="top")
     with c1:
@@ -382,6 +509,9 @@ def show_detail(df, sku):
         h.metric("In production", g("In production"))
         i.metric("Ship qty", g("Ship qty"))
         j.metric("Order qty", g("Order qty"))
+    st.markdown("#### 🧮 The math — every unit, spelled out")
+    st.code(unit_math_text(r), language=None)
+    show_otw_shipments(r)
     ws, wo = str(r.get("Why ship", "")).strip(), str(r.get("Why order", "")).strip()
     if ws:
         st.markdown("#### 🚢 Why this ship quantity")
@@ -391,11 +521,200 @@ def show_detail(df, sku):
         st.info(wo)
     if _int(r.get("Overdue days")) > 0:
         st.warning(f"⚠️ {_int(r.get('Overdue days'))} days overdue at the supplier — chase them.")
+
+
+def show_detail(df, sku):
+    """A full detail 'page' for one product (opened by clicking a product name)."""
+    st.markdown('<a class="kt-back" href="?" target="_self">← Back to dashboard</a>', unsafe_allow_html=True)
+    m = df[df["SKU"].astype(str) == str(sku)]
+    if m.empty:
+        st.warning(f"Product '{sku}' isn't on the dashboard right now.")
+        return
+    product_card(m.iloc[0])
     st.markdown('<a class="kt-back" href="?" target="_self">← Back to dashboard</a>', unsafe_allow_html=True)
 
 
-# ---- load + refresh -------------------------------------------------------
-top_l, top_r = st.columns([5, 1])
+# Shared look + clipboard JS for the 📣 Ads HTML tables (inline 📋 copy icons).
+_ADS_CSS = """
+    <style>
+      * { box-sizing:border-box; }
+      body { margin:0; font-family:Inter,system-ui,sans-serif; color:#2b211c; }
+      .wrap { max-height:560px; overflow:auto; border:1px solid #ece3d8; border-radius:12px; }
+      table { border-collapse:collapse; width:100%; font-size:13px; }
+      thead th { position:sticky; top:0; background:#2e5984; color:#fff; font-weight:700;
+        text-align:left; padding:9px 10px; font-size:11px; z-index:1; }
+      td { padding:8px 10px; border-bottom:1px solid #f0e9df; vertical-align:middle; }
+      tr:hover td { background:#faf5ee; }
+      td img { width:40px; height:40px; object-fit:contain; border-radius:8px; background:#f4efe7;
+        border:1px solid #ece3d8; }
+      .noimg { width:40px; height:40px; border-radius:8px; background:#f4efe7; border:1px solid #ece3d8; }
+      .prod { font-weight:600; max-width:230px; }
+      .camp { color:#5d4037; max-width:300px; }
+      .camplist { color:#7a6a5c; font-size:11px; line-height:1.4; max-width:340px;
+        max-height:80px; overflow:auto; display:block; }
+      .mono { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; white-space:nowrap; }
+      .ctr { text-align:center; white-space:nowrap; }
+      .hero { color:#c8a415; }
+      .pct { color:#9a8c80; }
+      .cp { cursor:pointer; margin-left:5px; opacity:.55; font-size:12px; user-select:none; }
+      .cp:hover { opacity:1; }
+      a { color:#b07a4f; text-decoration:none; font-weight:700; }
+      a:hover { text-decoration:underline; }
+    </style>"""
+_ADS_JS = """
+    <script>
+      function cp(el) {
+        const t = el.getAttribute('data-v');
+        const ta = document.createElement('textarea'); ta.value = t;
+        ta.style.position='fixed'; ta.style.opacity='0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        try { document.execCommand('copy'); } catch(e) {}
+        document.body.removeChild(ta);
+        const o = el.textContent; el.textContent = '✓';
+        setTimeout(function(){ el.textContent = o; }, 900);
+      }
+    </script>"""
+
+
+def _cp_icon(v):
+    """A small clickable 📋 copy icon carrying its value (one click → clipboard)."""
+    import html as _html
+    return (f'<span class="cp" data-v="{_html.escape(str(v), quote=True)}" '
+            f'onclick="cp(this)" title="Copy">📋</span>')
+
+
+def _render_ads_table(thead, rows_html, n):
+    import streamlit.components.v1 as components
+    doc = (_ADS_CSS + f'<div class="wrap"><table>{thead}<tbody>{rows_html}</tbody></table></div>'
+           + _ADS_JS)
+    components.html(doc, height=min(610, 96 + n * 49), scrolling=False)
+
+
+def _img_cell(r):
+    import html as _html
+    img = str(r.get("Image", "")).strip()
+    return (f'<img src="{_html.escape(img, quote=True)}">' if img.startswith("http")
+            else '<div class="noimg"></div>')
+
+
+def _amz_link(r):
+    asin = str(r.get("ASIN", "")).strip()
+    return f'<a href="https://www.amazon.com/dp/{asin}" target="_blank">Amazon ↗</a>' if asin else ""
+
+
+def ads_budget_table(budgets):
+    """Budget-taper suggestions — compact table with an inline 📋 next to each SKU and
+    campaign name (one click copies it; no Ctrl+C popup)."""
+    import html as _html
+    rows = ""
+    for _, r in budgets.iterrows():
+        product = _html.escape(str(r.get("Product", ""))[:48])
+        sku = str(r.get("SKU", ""))
+        camp = str(r.get("Campaign", ""))
+        days = int(float(r.get("Days left", 0) or 0))
+        cur = float(r.get("Current budget", 0) or 0)
+        sug = float(r.get("Suggested budget", 0) or 0)
+        pct = _html.escape(str(r.get("Change", "")))
+        hero = "★" if str(r.get("Hero", "")).strip() else ""
+        rows += (
+            f'<tr><td>{_img_cell(r)}</td>'
+            f'<td class="prod">{product}</td>'
+            f'<td class="mono">{_html.escape(sku)} {_cp_icon(sku)}</td>'
+            f'<td class="ctr hero">{hero}</td>'
+            f'<td class="ctr">{days}d</td>'
+            f'<td class="ctr">${cur:.2f} → <b>${sug:.2f}</b> <span class="pct">{pct}</span></td>'
+            f'<td class="camp">{_html.escape(camp[:54])} {_cp_icon(camp)}</td>'
+            f'<td class="ctr">{_amz_link(r)}</td></tr>'
+        )
+    thead = ('<thead><tr><th></th><th>Product</th><th>SKU</th><th>★</th><th>Days</th>'
+             '<th>Budget</th><th>Campaign &nbsp;(📋 to copy)</th><th>Amazon</th></tr></thead>')
+    _render_ads_table(thead, rows, len(budgets))
+
+
+def ads_pause_table(pauses):
+    """One row per low/out-of-stock SKU still advertised in the Catch All portfolio.
+    Shows how many Catch All campaigns/ad groups it's in + the campaign list. Copy the
+    SKU and filter the Catch All portfolio by it to pause all its ads at once."""
+    import html as _html
+    rows = ""
+    for _, r in pauses.iterrows():
+        product = _html.escape(str(r.get("Product", ""))[:46])
+        sku = str(r.get("SKU", ""))
+        camplist = str(r.get("Campaign", ""))
+        spread = _html.escape(str(r.get("Detail", "")))
+        days = int(float(r.get("Days left", 0) or 0))
+        hero = "★" if str(r.get("Hero", "")).strip() else ""
+        dlabel = '<b style="color:#c0392b">OUT</b>' if days <= 0 else f"{days}d"
+        rows += (
+            f'<tr><td>{_img_cell(r)}</td>'
+            f'<td class="prod">{product}</td>'
+            f'<td class="mono">{_html.escape(sku)} {_cp_icon(sku)}</td>'
+            f'<td class="ctr hero">{hero}</td>'
+            f'<td class="ctr">{dlabel}</td>'
+            f'<td class="ctr">{spread}</td>'
+            f'<td class="camplist">{_html.escape(camplist)}</td>'
+            f'<td class="ctr">{_amz_link(r)}</td></tr>'
+        )
+    thead = ('<thead><tr><th></th><th>Product</th><th>SKU</th><th>★</th><th>Days</th>'
+             '<th>Spread</th><th>Catch All campaigns it\'s in</th><th>Amazon</th></tr></thead>')
+    _render_ads_table(thead, rows, len(pauses))
+
+
+def show_ads(ppc):
+    """📣 Ads tab: inventory-aware PPC suggestions. SUGGESTION-ONLY — a report of what
+    the tool would do; it never touches your campaigns. You decide and act in Amazon."""
+    st.info("💡 **Suggestion-only.** These are ideas based on your stock levels — nothing here "
+            "changes your Amazon ads. Review them and make any change yourself in Seller Central / Ads.")
+
+    if ppc is None or ppc.empty:
+        st.caption("No PPC suggestions yet. They appear here after the next morning update "
+                   "(and once the Amazon Ads connection has been set up).")
+        return
+
+    budgets = ppc[ppc["Type"].astype(str) == "Budget ↓"].copy()
+    pauses = ppc[ppc["Type"].astype(str) == "Remove low SKU"].copy()
+
+    st.markdown(f"### 🔻 Budget tapers &nbsp;·&nbsp; {len(budgets)}")
+    st.caption("Single-product campaigns whose product is getting low on FBA stock — ease the daily "
+               "budget down so you don't sell out faster than you can restock. (Glides back up on its "
+               "own as stock recovers. Catch All campaigns are never touched here.)")
+    if budgets.empty:
+        st.success("No budget changes suggested right now. ✅")
+    else:
+        ads_budget_table(budgets)
+
+    st.divider()
+    st.markdown(f"### ⏸️ Remove low SKUs from Catch All &nbsp;·&nbsp; {len(pauses)} products")
+    st.caption("Low / out-of-stock products still advertised inside your **Catch All** portfolio. "
+               "Each row is one product and how widely it's still running there. **Fastest fix:** copy "
+               "the SKU (📋), open the Catch All portfolio, search that SKU, and pause all its ads at "
+               "once — other products in those campaigns stay untouched. Re-add it yourself once "
+               "restocked. (The tool never re-enables ads on its own.)")
+    if pauses.empty:
+        st.success("No low-stock SKUs over-advertised in Catch All right now. ✅")
+    else:
+        ads_pause_table(pauses)
+
+
+GUIDE_MD = (
+    "**The four boxes** up top are today's headlines — click one to see the "
+    "products or shipments behind the number.\n\n"
+    "**🚢 Ship to FBA** — what to send from the China warehouse to Amazon now. "
+    "Adjust quantities, copy the list for 9Yards, or send it to Sky's sheet.\n\n"
+    "**🏭 Reorder** — what to manufacture next, how many, and by when.\n\n"
+    "**📋 All products** — search anything by name, SKU, or ASIN. "
+    "Click a product name for its full breakdown.\n\n"
+    "**📣 Ads** — suggestions to ease ad spend on low-stock products. "
+    "Suggestion-only; nothing changes automatically.\n\n"
+    "**🤖 Ask AI** — ask questions about your inventory in plain English.\n\n"
+    "⚙️ To hide a discontinued product, open the sidebar (**»** arrow, top-left) → Manage products.\n\n"
+    "_Data refreshes every morning at 6am automatically._")
+
+# ---- top bar: guide + refresh ----------------------------------------------
+top_l, top_g, top_r = st.columns([4, 1.1, 1])
+with top_g:
+    with st.popover("❓ Quick guide", use_container_width=True):
+        st.markdown(GUIDE_MD)
 with top_r:
     if st.button("🔄 Refresh", use_container_width=True):
         load_data.clear()
@@ -412,8 +731,11 @@ if _view:
     show_detail(df, _view)
     st.stop()
 
-# ---- sidebar: hide / restore discontinued products ------------------------
+# ---- sidebar: quick guide + manage products --------------------------------
 with st.sidebar:
+    st.header("🧭 Quick guide")
+    st.markdown(GUIDE_MD)
+    st.divider()
     st.header("⚙️ Manage products")
     st.caption("Hide products you've discontinued so they drop off the dashboard.")
     opts = {f"{str(r['Product'])[:42]} — {r['SKU']}": str(r["SKU"]) for _, r in df.iterrows()}
@@ -454,22 +776,10 @@ brand = (f'<div class="kt-logoplate"><img class="kt-logo" src="{_logo}"></div>' 
 st.markdown(
     f'<div class="kt-hero">{brand}'
     '<h1>China Reorder Command Center</h1>'
-    '<p>Everything you need to know — what to ship, what to order, and why.</p>'
+    '<p>What to ship, what to order, and why — updated every morning. '
+    '<span style="opacity:.75;font-size:.88rem">New here? Open the sidebar (» top-left) for a 1-minute guide.</span></p>'
     f'<span class="kt-chip">{chip}</span></div>',
     unsafe_allow_html=True)
-
-st.caption("Tap a box to see the products or shipments behind the number.")
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def load_inbound():
-    """The 'Inbound Shipments' tab (written by the morning pipeline from 9Yards)."""
-    try:
-        ws = _gclient().open_by_key(config.CHINA_SHEET_ID).worksheet("Inbound Shipments")
-        return pd.DataFrame(ws.get_all_records())
-    except Exception:
-        return pd.DataFrame()
-
 
 def _mini_table(frame, cols):
     show = frame[[c for c in cols if c in frame.columns]]
@@ -479,60 +789,67 @@ def _mini_table(frame, cols):
         st.dataframe(show, hide_index=True, use_container_width=True)
 
 
-with st.expander(f"🚢  &nbsp; :green[**{len(ship)}**] &nbsp; TO SHIP NOW"):
-    _mini_table(ship, ["Product", "SKU", "Ship qty", "FBA days left", "Size", "Supplier"])
-
-with st.expander(f"🏭  &nbsp; :red[**{len(reorder)}**] &nbsp; TO REORDER"):
-    _mini_table(reorder, ["Product", "SKU", "Order qty", "Priority", "Order by", "Supplier"])
-
-with st.expander(f"⚠️  &nbsp; :orange[**{n_overdue}**] &nbsp; OVERDUE AT SKY"):
-    if "Overdue days" in df.columns:
-        _od = df[df["Overdue days"].apply(_int) > 0].copy()
-        _od["_o"] = _od["Overdue days"].apply(_int)
-        _od = _od.sort_values("_o", ascending=False)
-    else:
-        _od = df.iloc[0:0]
-    _mini_table(_od, ["Product", "SKU", "In production", "Overdue days", "Supplier"])
-
-_STATUS_LABEL = {
-    "WORKING": "📝 Working (not shipped yet)", "SHIPPED": "🚚 Shipped",
-    "IN_TRANSIT": "🚚 In transit", "RECEIVING": "📥 Receiving at FBA",
-    "DELIVERED": "✅ Delivered",
-}
-
-with st.expander(f"📦  &nbsp; :blue[**{otw_total:,}**] &nbsp; UNITS ON THE WAY"):
-    _inb = load_inbound()
-    if not _inb.empty and "SKU" in _inb.columns:
-        # only show shipments for SKUs that are part of the China reorder dashboard
-        _china = set(df["SKU"].astype(str).str.strip())
-        _inb = _inb[_inb["SKU"].astype(str).str.strip().isin(_china)]
-    if _inb.empty or "Shipment ID" not in _inb.columns:
-        st.caption("No shipment detail for China SKUs yet — it appears after the next morning update.")
-    else:
-        _inb = _inb.copy()
-        _inb["Open in Amazon"] = _inb["Shipment ID"].astype(str).apply(
-            lambda x: f"https://sellercentral.amazon.com/fba/inbound-shipment/summary/{x}/shipmentEvents"
-            if x.strip() else "")
-        if "9Yards ID" in _inb.columns:
-            _inb["Open in 9Yards"] = _inb["9Yards ID"].astype(str).apply(
-                lambda x: f"https://app.nineyard.com/shipyard/shipments/detail/{x}"
-                if x.strip() and x.strip().lower() != "nan" else "")
-        if "Status" in _inb.columns:
-            _inb["Status"] = _inb["Status"].astype(str).apply(lambda s: _STATUS_LABEL.get(s.strip().upper(), s))
-        _units = int(_inb["Units on the way"].apply(_int).sum())
-        st.caption(f"**{_inb['Shipment ID'].nunique()} shipments · {_units:,} units.** "
-                   "Open a shipment in Amazon Seller Central or in 9Yards (you must be logged in). "
-                   "Sort by Status or Shipment ID to group.")
-        _cols = ["Shipment ID", "Shipment name", "Status", "Type", "SKU", "Units on the way",
-                 "Open in Amazon", "Open in 9Yards"]
-        st.dataframe(
-            _inb[[c for c in _cols if c in _inb.columns]],
-            hide_index=True, use_container_width=True,
-            column_config={
-                "Open in Amazon": st.column_config.LinkColumn("Seller Central", display_text="View ↗"),
-                "Open in 9Yards": st.column_config.LinkColumn("9Yards", display_text="View ↗"),
-                "Units on the way": st.column_config.NumberColumn(format="%d"),
-            })
+# ---- the four headline stat boxes (click to see what's behind each) --------
+_kpirow = st.container(key="kpirow")
+with _kpirow:
+    k1, k2, k3, k4 = st.columns(4)
+with k1:
+    with st.popover(f"🚢 :green[**{len(ship)}**] to ship now", use_container_width=True):
+        st.caption("Running low at Amazon, with stock ready in the China warehouse — "
+                   "build the shipment in the **🚢 Ship to FBA** tab.")
+        _mini_table(ship, ["Product", "SKU", "Ship qty", "FBA days left", "Size", "Supplier"])
+with k2:
+    with st.popover(f"🏭 :red[**{len(reorder)}**] to reorder", use_container_width=True):
+        st.caption("The pipeline won't cover the next make-and-ship cycle — "
+                   "order quantities and reasons are in the **🏭 Reorder** tab.")
+        _mini_table(reorder, ["Product", "SKU", "Order qty", "Priority", "Order by", "Supplier"])
+with k3:
+    with st.popover(f"⚠️ :orange[**{n_overdue}**] overdue at Sky", use_container_width=True):
+        st.caption("In-production units past their promised ready date — worth chasing Sky. "
+                   "Sorted worst-first.")
+        if "Overdue days" in df.columns:
+            _od = df[df["Overdue days"].apply(_int) > 0].copy()
+            _od["_o"] = _od["Overdue days"].apply(_int)
+            _od = _od.sort_values("_o", ascending=False)
+        else:
+            _od = df.iloc[0:0]
+        _mini_table(_od, ["Product", "SKU", "In production", "Overdue days", "Supplier"])
+with k4:
+    with st.popover(f"📦 :blue[**{otw_total:,}**] on the way", use_container_width=True):
+        _inb = load_inbound()
+        if not _inb.empty and "SKU" in _inb.columns:
+            # only shipments for SKUs that are part of the China reorder dashboard
+            _china = set(df["SKU"].astype(str).str.strip())
+            _inb = _inb[_inb["SKU"].astype(str).str.strip().isin(_china)]
+        if _inb.empty or "Shipment ID" not in _inb.columns:
+            st.caption("No shipment detail yet — it appears after the next morning update.")
+        else:
+            render_inbound_table(_inb)
+        st.divider()
+        st.caption("Made new shipments today? Pull the latest from 9Yards — this also refreshes "
+                   "the **FBA Shipments** traceability column on Sky's sheet.")
+        if st.button("🔄 Update now from 9Yards (~1 min)", key="inb_sync"):
+            try:
+                import fetch_nineyard
+                import inbound_sync
+                if not fetch_nineyard.is_configured():
+                    st.warning("9Yards login isn't set up here. On the cloud site, add a "
+                               "`[nineyard]` section (email / password / companyId) in "
+                               "Streamlit → Settings → Secrets.")
+                else:
+                    with st.spinner("Pulling live shipments from 9Yards…"):
+                        _rows = fetch_nineyard.get_inbound_shipments()
+                    with st.spinner("Updating the dashboard + Sky's sheet…"):
+                        _gc = _gclient()
+                        inbound_sync.write_inbound_shipments_tab(
+                            _gc.open_by_key(config.CHINA_SHEET_ID), _rows)
+                        _n = inbound_sync.write_fba_ids_to_sky(_gc, _rows)
+                    load_inbound.clear()
+                    st.success(f"✅ Updated — {len(_rows)} shipment lines pulled; Sky's sheet "
+                               f"annotated for {_n} SKUs. Reopen this box to see the fresh list.")
+            except Exception as e:
+                st.error(f"Couldn't update right now ({type(e).__name__}). "
+                         "Check the 9Yards login and that Sky's sheet is shared with the app.")
 
 # ---- AI daily briefing ----------------------------------------------------
 _ai_csv = ai.table(df)
@@ -562,9 +879,12 @@ with st.expander("📰  Today's AI briefing", expanded=False):
             st.warning(f"Couldn't generate the briefing right now ({type(e).__name__}). "
                        "Check the API key on the **🤖 Ask AI** tab.")
 
-tab_ship, tab_order, tab_all, tab_ai = st.tabs(
+ppc_df = load_ppc()
+_n_ppc = len(ppc_df) if not ppc_df.empty else 0
+tab_ship, tab_order, tab_all, tab_ads, tab_ai = st.tabs(
     [f"🚢 Ship to FBA · {len(ship)}", f"🏭 Reorder · {len(reorder)}",
-     f"📋 All products · {len(df)}", "🤖 Ask AI"])
+     f"📋 All products · {len(df)}",
+     (f"📣 Ads · {_n_ppc}" if _n_ppc else "📣 Ads"), "🤖 Ask AI"])
 
 def _cbm_unit(r):
     try:
@@ -614,6 +934,33 @@ def ship_group(frame, title):
             st.caption(f"📦 {cu * int(st.session_state['shq_'+sku]):.2f} CBM" if cu > 0 else "CBM n/a")
 
 
+def push_ship_to_sky(china_skus, ship_map):
+    """Write ship quantities into column F ('ship') of Sky's sheet, matched BY SKU (row-safe).
+    Only rows whose SKU we track are touched: the quantity for what you're shipping, blank for
+    the rest — so Sky's 'ship' column shows exactly this round's plan. Nothing else is changed.
+    Returns (n_written, n_cleared)."""
+    sh = _gclient().open_by_key(config.SKY_SHEET_ID)
+    written = cleared = 0
+    for ws in sh.worksheets():
+        vals = ws.get_all_values()
+        if len(vals) < 3:
+            continue
+        hdr = [str(h).strip().lower() for h in vals[0]]
+        sku_c = next((i for i, h in enumerate(hdr) if h in ("sku name", "sku")), 1)
+        updates = []
+        for ridx, row in enumerate(vals[2:], start=3):   # data starts on sheet row 3
+            s = row[sku_c].strip() if len(row) > sku_c else ""
+            if not s or s not in china_skus:
+                continue
+            q = ship_map.get(s, 0)
+            updates.append({"range": f"F{ridx}", "values": [[q if q > 0 else ""]]})
+            written += 1 if q > 0 else 0
+            cleared += 0 if q > 0 else 1
+        if updates:
+            ws.batch_update(updates, value_input_option="USER_ENTERED")
+    return written, cleared
+
+
 with tab_ship:
     if ship.empty:
         st.success("Nothing to ship right now. ✅")
@@ -639,6 +986,30 @@ with tab_ship:
             else:
                 ship_group(ovr_f, "🛒 Oversize")
 
+        with st.expander("🚀 Send ship quantities to Sky's sheet"):
+            _ship_map = {str(s): int(st.session_state.get("shq_" + str(s), 0)) for s in ship["SKU"]}
+            _ship_map = {k: v for k, v in _ship_map.items() if v > 0}
+            st.caption("This writes your quantities straight into the **'ship' column** of Sky's sheet, "
+                       "matched by SKU — so Sky sees exactly what to prepare. It sets the quantities you're "
+                       "shipping and blanks the rest of your tracked SKUs (so it's this round's plan). "
+                       "Nothing else in Sky's sheet is touched.")
+            if not _ship_map:
+                st.info("No ship quantities set yet — adjust some above first.")
+            else:
+                st.write(f"**{len(_ship_map)} SKUs** will be sent to Sky:")
+                st.dataframe(pd.DataFrame([{"SKU": k, "Ship qty": v} for k, v in _ship_map.items()]),
+                             hide_index=True, use_container_width=True)
+                if st.button("🚀 Send to Sky's sheet now", type="primary"):
+                    with st.spinner("Writing to Sky's sheet…"):
+                        try:
+                            w, c = push_ship_to_sky(set(df["SKU"].astype(str)), _ship_map)
+                            st.success(f"✅ Done — wrote **{w}** ship quantities into Sky's sheet"
+                                       + (f" and cleared {c} old ones." if c else "."))
+                        except Exception as e:
+                            st.error(f"Couldn't write to Sky's sheet ({type(e).__name__}). On the cloud site "
+                                     "the app's service account needs **Editor** access to Sky's sheet — share it "
+                                     "with `kitchentoolz-app@kitchentoolz-inventory.iam.gserviceaccount.com`.")
+
 def supplier_filter(frame, key):
     sups = sorted(s for s in frame["Supplier"].unique() if str(s).strip() and s != "—")
     if not sups:
@@ -647,24 +1018,33 @@ def supplier_filter(frame, key):
     return frame if pick == "All suppliers" else frame[frame["Supplier"] == pick]
 
 with tab_order:
+    st.caption("Products whose whole pipeline won't cover the next make-and-ship cycle. "
+               "Each card says how many to order, by when, and why — click a product name for the full breakdown.")
     rv = supplier_filter(reorder, "sup_reorder")
     render(rv,
            lambda r: f'<div class="kt-actnum" style="color:{"#c0392b" if r["Priority"]=="order now" else "#9a7400"}">'
                      f'Order {_int(r["Order qty"]):,}</div>', "Why order")
 
 with tab_all:
+    st.caption("Every tracked product. **Click a product name** for its full breakdown — "
+               "every unit, the math, and its shipments.")
     c_search, c_sup = st.columns([3, 1])
     with c_search:
-        q = st.text_input("🔎 Search by product name or SKU", placeholder="e.g. cookie jar, SK-SW-…")
+        q = st.text_input("🔎 Search by product name, SKU, or ASIN",
+                          placeholder="e.g. cookie jar, SK-SW-…, B0DZW6QKG1")
     with c_sup:
         sups = sorted(s for s in df["Supplier"].unique() if str(s).strip() and s != "—")
         pick = st.selectbox("Supplier", ["All suppliers"] + sups, key="sup_all")
     view = df if pick == "All suppliers" else df[df["Supplier"] == pick]
     if q:
         ql = q.lower()
-        view = view[view.apply(lambda r: ql in str(r["Product"]).lower() or ql in str(r["SKU"]).lower(), axis=1)]
+        view = view[view.apply(lambda r: ql in str(r["Product"]).lower() or ql in str(r["SKU"]).lower()
+                               or ql in str(r.get("ASIN", "")).lower(), axis=1)]
     render(view, lambda r: f'<div class="kt-actnum" style="font-size:1.05rem">{EMOJI.get(str(r.get("Priority","")),"")} '
                            f'{html.escape(str(r.get("What to do","")))}</div>', "Why order")
+
+with tab_ads:
+    show_ads(ppc_df)
 
 
 @st.cache_data(ttl=86400, show_spinner="🤖 Thinking up product ideas…")
