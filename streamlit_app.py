@@ -827,8 +827,9 @@ with k4:
             render_inbound_table(_inb)
         st.divider()
         st.caption("Made new shipments today? Pull the latest from 9Yards — this also refreshes "
-                   "the **FBA Shipments** traceability column on Sky's sheet.")
-        if st.button("🔄 Update now from 9Yards (~1 min)", key="inb_sync"):
+                   "the **FBA Shipments** traceability column on Sky's sheet. "
+                   "(To keep 9Yards happy, pulls are gentle: data fresher than 30 min is reused.)")
+        if st.button("🔄 Update now from 9Yards", key="inb_sync"):
             try:
                 import fetch_nineyard
                 import inbound_sync
@@ -837,15 +838,19 @@ with k4:
                                "`[nineyard]` section (email / password / companyId) in "
                                "Streamlit → Settings → Secrets.")
                 else:
-                    with st.spinner("Pulling live shipments from 9Yards…"):
-                        _rows = fetch_nineyard.get_inbound_shipments()
+                    _age = fetch_nineyard.cache_age_hours()
+                    with st.spinner("Getting shipments from 9Yards…"):
+                        _rows = fetch_nineyard.get_inbound_shipments(max_age_hours=0.5)
+                    if _age is not None and _age < 0.5:
+                        st.info(f"♻️ Used data pulled {int(_age * 60)} min ago (no need to hit "
+                                "9Yards again that fast — it refreshes after 30 min).")
                     with st.spinner("Updating the dashboard + Sky's sheet…"):
                         _gc = _gclient()
                         inbound_sync.write_inbound_shipments_tab(
                             _gc.open_by_key(config.CHINA_SHEET_ID), _rows)
                         _n = inbound_sync.write_fba_ids_to_sky(_gc, _rows)
                     load_inbound.clear()
-                    st.success(f"✅ Updated — {len(_rows)} shipment lines pulled; Sky's sheet "
+                    st.success(f"✅ Updated — {len(_rows)} shipment lines; Sky's sheet "
                                f"annotated for {_n} SKUs. Reopen this box to see the fresh list.")
             except Exception as e:
                 st.error(f"Couldn't update right now ({type(e).__name__}). "
@@ -881,9 +886,33 @@ with st.expander("📰  Today's AI briefing", expanded=False):
 
 ppc_df = load_ppc()
 _n_ppc = len(ppc_df) if not ppc_df.empty else 0
-tab_ship, tab_order, tab_all, tab_ads, tab_ai = st.tabs(
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_sky_ledger():
+    """Avi's Sky Inventory Ledger (read-only API). None if not configured / unreachable."""
+    try:
+        url = st.secrets.get("sky_ledger_url")
+        tok = st.secrets.get("sky_ledger_token")
+    except Exception:
+        url = tok = None
+    if not url or not tok:
+        return None
+    try:
+        import sky_ledger
+        return sky_ledger.fetch_ledger(url, tok)
+    except Exception:
+        return None
+
+
+def _lnum(v):
+    try:
+        return float(str(v or 0).replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+tab_ship, tab_order, tab_all, tab_sky, tab_ads, tab_ai = st.tabs(
     [f"🚢 Ship to FBA · {len(ship)}", f"🏭 Reorder · {len(reorder)}",
-     f"📋 All products · {len(df)}",
+     f"📋 All products · {len(df)}", "🏭 Sky Warehouse",
      (f"📣 Ads · {_n_ppc}" if _n_ppc else "📣 Ads"), "🤖 Ask AI"])
 
 def _cbm_unit(r):
@@ -893,8 +922,9 @@ def _cbm_unit(r):
         return 0.0
 
 
-def ship_group(frame, title):
-    """Render one shipment group (Standard or Oversize) with a live CBM total."""
+def ship_group(frame, title, sky_stock=None):
+    """Render one shipment group (Standard or Oversize) with a live CBM total.
+    sky_stock = {sku_lower: In-Stock at Sky} from Avi's ledger, to flag shortfalls."""
     if frame.empty:
         return
     skus = [str(s) for s in frame["SKU"]]
@@ -932,6 +962,16 @@ def ship_group(frame, title):
             st.number_input("Ship qty", min_value=0, step=10, key="shq_" + sku)
             cu = _cbm_unit(r)
             st.caption(f"📦 {cu * int(st.session_state['shq_'+sku]):.2f} CBM" if cu > 0 else "CBM n/a")
+            if sky_stock is not None:
+                _k = sku.strip().lower()
+                if _k in sky_stock:
+                    _instock = int(sky_stock[_k])
+                    if int(st.session_state["shq_" + sku]) > _instock:
+                        st.markdown(f":red[⚠️ Sky has only **{_instock:,}** in stock]")
+                    else:
+                        st.caption(f"🏭 Sky in stock: {_instock:,}")
+                else:
+                    st.caption("🏭 not in Sky ledger")
 
 
 def push_ship_to_sky(china_skus, ship_map):
@@ -969,6 +1009,15 @@ with tab_ship:
             st.session_state.setdefault("shq_" + sku, _int(q))
         st.caption("Adjust any quantity (use +/– or type), then hit the green button → paste into "
                    "9Yards → Add SKU → **Paste Bulk**. CBM totals update as you change quantities.")
+        # Avi's ledger In-Stock, to flag when Sky doesn't physically have the units to ship.
+        _sled = load_sky_ledger()
+        _sky_stock = None
+        if _sled:
+            _sky_stock = {str(b.get("fba", "")).strip().lower(): _lnum(b.get("stock"))
+                          for b in _sled["balances"] if str(b.get("fba", "")).strip()}
+            st.caption("🏭 Each row shows Sky's **In Stock** from Avi's ledger — ⚠️ in red means Sky doesn't have "
+                       "enough finished units for the recommended shipment. (Sky's numbers are 'sets'; pending "
+                       "Avi's confirmation that a set = one Amazon unit.)")
         if "Size" in ship.columns:
             _is_ovr = ship["Size"].astype(str).str.strip().str.lower().eq("oversize")
         else:
@@ -979,12 +1028,12 @@ with tab_ship:
             if std_f.empty:
                 st.success("No standard-size items to ship right now. ✅")
             else:
-                ship_group(std_f, "📦 Standard size")
+                ship_group(std_f, "📦 Standard size", _sky_stock)
         with sub_ovr:
             if ovr_f.empty:
                 st.success("No oversize items to ship right now. ✅")
             else:
-                ship_group(ovr_f, "🛒 Oversize")
+                ship_group(ovr_f, "🛒 Oversize", _sky_stock)
 
         with st.expander("🚀 Send ship quantities to Sky's sheet"):
             _ship_map = {str(s): int(st.session_state.get("shq_" + str(s), 0)) for s in ship["SKU"]}
@@ -1042,6 +1091,66 @@ with tab_all:
                                or ql in str(r.get("ASIN", "")).lower(), axis=1)]
     render(view, lambda r: f'<div class="kt-actnum" style="font-size:1.05rem">{EMOJI.get(str(r.get("Priority","")),"")} '
                            f'{html.escape(str(r.get("What to do","")))}</div>', "Why order")
+
+with tab_sky:
+    st.subheader("🏭 Sky Warehouse — live from Avi's ledger")
+    _led = load_sky_ledger()
+    if _led is None:
+        st.info("Sky's ledger isn't connected yet (needs `sky_ledger_url` + `sky_ledger_token` in secrets).")
+    else:
+        _bal = _led["balances"]
+        _blook = {str(b.get("fba", "")).strip().lower(): b for b in _bal if str(b.get("fba", "")).strip()}
+        _our = df.copy()
+        _our["_k"] = _our["SKU"].astype(str).str.strip().str.lower()
+        _matched = _our[_our["_k"].isin(_blook)]
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Products matched", f"{len(_matched)} / {len(_our)}")
+        m2.metric("In production (ledger)", f"{int(sum(_lnum(b.get('prod')) for b in _bal)):,}")
+        m3.metric("In stock at Sky (ledger)", f"{int(sum(_lnum(b.get('stock')) for b in _bal)):,}")
+        st.caption("Matched on your Amazon SKU. Acrylic/borosilicate items aren't in Sky's warehouse, so they "
+                   "won't match. Quantities are Sky's **'sets'** — pending Avi's confirmation that a set = one "
+                   "Amazon unit, so treat the comparison as directional for now.")
+
+        st.markdown("#### Ledger vs the dashboard's current numbers  ·  ⚠️ = the two records disagree")
+        _rows = []
+        for _, r in _matched.iterrows():
+            b = _blook[r["_k"]]
+            ls, lp = int(_lnum(b.get("stock"))), int(_lnum(b.get("prod")))
+            os_, op = _int(r.get("China warehouse")), _int(r.get("In production"))
+            _rows.append({
+                "Product": str(r["Product"])[:38], "SKU": r["SKU"],
+                "In stock (ledger)": ls, "China warehouse (now)": os_, "Stock Δ": "⚠️" if ls != os_ else "",
+                "In prod (ledger)": lp, "In prod (now)": op, "Prod Δ": "⚠️" if lp != op else "",
+                "Flag": b.get("flag", "") or "",
+            })
+        if _rows:
+            _rdf = pd.DataFrame(_rows)
+            _rdf["_d"] = (_rdf["Stock Δ"] != "") | (_rdf["Prod Δ"] != "")
+            _ndiff = int(_rdf["_d"].sum())
+            st.caption(f"**{_ndiff}** product(s) where the ledger and the dashboard disagree (shown first).")
+            _rdf = _rdf.sort_values("_d", ascending=False).drop(columns=["_d"])
+            st.dataframe(_rdf, hide_index=True, use_container_width=True)
+
+        _probs = [b for b in _bal if str(b.get("flag", "")).strip()
+                  or _lnum(b.get("stock")) < 0 or _lnum(b.get("prod")) < 0]
+        if _probs:
+            st.markdown("#### ⚠️ Needs review (flagged or negative balances)")
+            st.dataframe(pd.DataFrame(_probs), hide_index=True, use_container_width=True)
+
+        st.markdown("#### Recent warehouse activity")
+        if _led["events"]:
+            st.dataframe(pd.DataFrame(_led["events"]), hide_index=True, use_container_width=True)
+        else:
+            st.caption("No recent events.")
+
+        with st.expander("SKUs that didn't match (mostly non-Sky suppliers)"):
+            _unm = sorted(set(_our["_k"]) - set(_blook))
+            st.caption(f"{len(_unm)} dashboard SKUs not in Sky's ledger:")
+            st.write(", ".join(_unm) or "—")
+            _lonly = sorted(set(_blook) - set(_our["_k"]))
+            st.caption(f"{len(_lonly)} ledger SKUs not on the dashboard:")
+            st.write(", ".join(_lonly) or "—")
 
 with tab_ads:
     show_ads(ppc_df)
