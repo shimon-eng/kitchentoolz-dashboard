@@ -21,6 +21,13 @@ ACRYLIC_SHEET_ID = "1VtpZ4OXKSRJ7Qf1zyuAFLJWsBHynCQteA7DTOySpBLI"
 # All supplier inventory sheets (same column format), read + merged into one feed.
 SUPPLIER_SHEET_IDS = [SKY_SHEET_ID, ACRYLIC_SHEET_ID]
 
+# Source of truth for Sky warehouse stock + in-production.
+#   False = Sky's master sheet (the reliable, maintained source — current default).
+#   True  = Avi's Sky Ledger API (flip to True once Avi keeps the ledger current).
+# The Sky Warehouse tab still SHOWS Avi's ledger either way; this only controls which
+# numbers actually drive the ship / reorder recommendations.
+USE_SKY_LEDGER = False
+
 # === Default thresholds ===
 # Days-of-inventory (DOI) buffers in FBA. Per-SKU overrides win if set in China sheet.
 DEFAULT_MIN_FBA_DOI = 60     # below this → consider Ship-Now
@@ -63,6 +70,12 @@ PPC_AD_READD_DAYS = 40
 # so links open your account's campaign list (search the campaign name shown), not the
 # exact campaign.
 ADS_ENTITY_ID = "ENTITYGOPMMFSG9YH9"
+
+# Our Amazon merchant/seller ID on the Gray Nod account (used by the Watchdog to tell
+# OUR offer apart from competitors' in Buy Box checks). Verified 2026-07-29 by matching
+# the FBA offer on all 10 hero ASINs; cross-check anytime in Seller Central →
+# Settings → Account Info → Merchant Token.
+SELLER_ID = "AJ8UK8AG6ED0R"
 
 # === Output ===
 CACHE_DIR = "~/.config/kitchentoolz-inventory"

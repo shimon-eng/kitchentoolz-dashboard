@@ -886,6 +886,25 @@ with st.expander("📰  Today's AI briefing", expanded=False):
 
 ppc_df = load_ppc()
 _n_ppc = len(ppc_df) if not ppc_df.empty else 0
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_watchdog():
+    """The 'Watchdog' tab (written by the morning pipeline from Amazon SP-API):
+    Buy Box losses, suppressed listings, stranded FBA units. Empty until the
+    SP-API connection is set up and the pipeline has run once."""
+    try:
+        ws = _gclient().open_by_key(config.CHINA_SHEET_ID).worksheet("Watchdog")
+        rows = ws.get_all_records()
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
+wd_df = load_watchdog()
+# The tab badge counts only problems on OUR dashboard SKUs — the red number should
+# mean "things Shimon needs to look at", not the whole account's draft-listing noise.
+_n_wd = int((wd_df["Mine"] == "✓").sum()) if not wd_df.empty and "Mine" in wd_df else 0
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_sky_ledger():
     """Avi's Sky Inventory Ledger (read-only API). None if not configured / unreachable."""
@@ -910,10 +929,11 @@ def _lnum(v):
         return 0.0
 
 
-tab_ship, tab_order, tab_all, tab_sky, tab_ads, tab_ai = st.tabs(
+tab_ship, tab_order, tab_all, tab_sky, tab_ads, tab_wd, tab_ai = st.tabs(
     [f"🚢 Ship to FBA · {len(ship)}", f"🏭 Reorder · {len(reorder)}",
      f"📋 All products · {len(df)}", "🏭 Sky Warehouse",
-     (f"📣 Ads · {_n_ppc}" if _n_ppc else "📣 Ads"), "🤖 Ask AI"])
+     (f"📣 Ads · {_n_ppc}" if _n_ppc else "📣 Ads"),
+     (f"🚨 Watchdog · {_n_wd}" if _n_wd else "🚨 Watchdog"), "🤖 Ask AI"])
 
 def _cbm_unit(r):
     try:
@@ -1010,14 +1030,16 @@ with tab_ship:
         st.caption("Adjust any quantity (use +/– or type), then hit the green button → paste into "
                    "9Yards → Add SKU → **Paste Bulk**. CBM totals update as you change quantities.")
         # Avi's ledger In-Stock, to flag when Sky doesn't physically have the units to ship.
-        _sled = load_sky_ledger()
+        # Only when the ledger is the source of truth — otherwise its stock is unreliable
+        # and would throw false shortfall warnings.
         _sky_stock = None
-        if _sled:
-            _sky_stock = {str(b.get("fba", "")).strip().lower(): _lnum(b.get("stock"))
-                          for b in _sled["balances"] if str(b.get("fba", "")).strip()}
-            st.caption("🏭 Each row shows Sky's **In Stock** from Avi's ledger — ⚠️ in red means Sky doesn't have "
-                       "enough finished units for the recommended shipment. (Sky's numbers are 'sets'; pending "
-                       "Avi's confirmation that a set = one Amazon unit.)")
+        if getattr(config, "USE_SKY_LEDGER", False):
+            _sled = load_sky_ledger()
+            if _sled:
+                _sky_stock = {str(b.get("fba", "")).strip().lower(): _lnum(b.get("stock"))
+                              for b in _sled["balances"] if str(b.get("fba", "")).strip()}
+                st.caption("🏭 Each row shows Sky's **In Stock** from Avi's ledger — ⚠️ in red means Sky doesn't "
+                           "have enough finished units for the recommended shipment.")
         if "Size" in ship.columns:
             _is_ovr = ship["Size"].astype(str).str.strip().str.lower().eq("oversize")
         else:
@@ -1154,6 +1176,38 @@ with tab_sky:
 
 with tab_ads:
     show_ads(ppc_df)
+
+
+with tab_wd:
+    st.subheader("🚨 Amazon Watchdog")
+    st.caption("Checked every morning straight from Amazon: do we own the Buy Box, "
+               "did any listing get suppressed, and is FBA stock stuck unsellable. "
+               "Read-only — it looks, it never touches.")
+    if wd_df.empty:
+        st.info("No Watchdog data yet — it appears after the next morning pipeline run "
+                "(needs the Amazon SP-API connection set up).")
+    else:
+        mine = wd_df[wd_df.get("Mine", "") == "✓"] if "Mine" in wd_df else wd_df
+        other = wd_df[wd_df.get("Mine", "") != "✓"] if "Mine" in wd_df else wd_df.iloc[0:0]
+        show_cols = [c for c in ["Severity", "Problem", "New", "Hero", "SKU", "Product",
+                                 "Our price", "Buy Box price", "What's going on", "Since"]
+                     if c in wd_df.columns]
+        if mine.empty:
+            st.success("All clear on your products: Buy Box held, nothing suppressed, "
+                       "nothing stranded. ✅")
+        else:
+            n_new = int((mine["New"] == "NEW").sum()) if "New" in mine else 0
+            if n_new:
+                st.error(f"{len(mine)} problem(s) on your products — {n_new} NEW since yesterday")
+            else:
+                st.warning(f"{len(mine)} ongoing problem(s) on your products")
+            st.dataframe(mine[show_cols], use_container_width=True, hide_index=True)
+        if not other.empty:
+            with st.expander(f"Other brands in the account · {len(other)} issue(s) "
+                             "(not dashboard SKUs — mostly draft listings)"):
+                st.dataframe(other[show_cols], use_container_width=True, hide_index=True)
+        if "Updated" in wd_df.columns and len(wd_df):
+            st.caption(f"Last checked: {str(wd_df['Updated'].iloc[0]).replace('T', ' ')} UTC")
 
 
 @st.cache_data(ttl=86400, show_spinner="🤖 Thinking up product ideas…")
